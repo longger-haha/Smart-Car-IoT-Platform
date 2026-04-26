@@ -1,4 +1,23 @@
 /.agent/
 /.specify/
 /specs/
+
+# 机密环境变量（不提交，使用 .env.example 替代）
 .env
+
+# Node.js
+node_modules/
+Frontend/dist/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+Backend/venv/
+Backend/.venv/
+*.egg-info/
+
+# IDE
+.vscode/
+.idea/
+*.DS_Store
