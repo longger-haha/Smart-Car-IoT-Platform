@@ -1,0 +1,106 @@
+version: "3.9"
+
+# ============================================================
+# SmartRover IoT 安全平台 — Docker Compose 编排
+# 服务: mysql | mosquitto | backend | frontend
+# 网络: smartrover_net (私有桥接网络)
+# ============================================================
+
+services:
+
+  # ── MySQL 8.0 数据库 ────────────────────────────────────────
+  mysql:
+    image: mysql:8.0
+    container_name: smartrover-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-rootpass}
+      MYSQL_DATABASE:      ${MYSQL_DATABASE:-smartrover_db}
+      MYSQL_USER:          ${MYSQL_USER:-sruser}
+      MYSQL_PASSWORD:      ${MYSQL_PASSWORD:-srpass123}
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./Docs/sql/init_struct.sql:/docker-entrypoint-initdb.d/init_struct.sql:ro
+    networks:
+      - smartrover_net
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost",
+             "-u", "${MYSQL_USER:-sruser}", "-p${MYSQL_PASSWORD:-srpass123}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # ── Eclipse Mosquitto MQTT Broker ───────────────────────────
+  mosquitto:
+    image: eclipse-mosquitto:2.0
+    container_name: smartrover-mosquitto
+    restart: unless-stopped
+    ports:
+      - "1883:1883"
+      # - "8883:8883"   # TLS 端口，Phase 7 启用
+    volumes:
+      - ./Deploy_Config/mosquitto/config:/mosquitto/config:ro
+      - mosquitto_data:/mosquitto/data
+      - mosquitto_log:/mosquitto/log
+    networks:
+      - smartrover_net
+
+  # ── Python Flask 后端 ────────────────────────────────────────
+  backend:
+    build:
+      context: ./Backend
+      dockerfile: Dockerfile
+    container_name: smartrover-backend
+    restart: unless-stopped
+    environment:
+      FLASK_SECRET_KEY:      ${FLASK_SECRET_KEY}
+      FLASK_DEBUG:           ${FLASK_DEBUG:-false}
+      JWT_SECRET_KEY:        ${JWT_SECRET_KEY}
+      MYSQL_HOST:            mysql
+      MYSQL_PORT:            ${MYSQL_PORT:-3306}
+      MYSQL_USER:            ${MYSQL_USER:-sruser}
+      MYSQL_PASSWORD:        ${MYSQL_PASSWORD:-srpass123}
+      MYSQL_DATABASE:        ${MYSQL_DATABASE:-smartrover_db}
+      MQTT_BROKER_HOST:      mosquitto
+      MQTT_BROKER_PORT:      ${MQTT_BROKER_PORT:-1883}
+      MQTT_USERNAME:         ${MQTT_USERNAME:-smartrover}
+      MQTT_PASSWORD:         ${MQTT_PASSWORD}
+      REPLAY_WINDOW_SECONDS: ${REPLAY_WINDOW_SECONDS:-30}
+      AES_KEY:               ${AES_KEY:-SmartRover2026!!}
+    ports:
+      - "5000:5000"
+    depends_on:
+      mysql:
+        condition: service_healthy
+      mosquitto:
+        condition: service_started
+    networks:
+      - smartrover_net
+
+  # ── Vue 3 前端 (Nginx) ──────────────────────────────────────
+  frontend:
+    build:
+      context: ./Frontend
+      dockerfile: Dockerfile
+    container_name: smartrover-frontend
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+    networks:
+      - smartrover_net
+
+# ── 持久化卷 ─────────────────────────────────────────────────
+volumes:
+  mysql_data:
+  mosquitto_data:
+  mosquitto_log:
+
+# ── 私有网络 ─────────────────────────────────────────────────
+networks:
+  smartrover_net:
+    driver: bridge
+    name: smartrover_net

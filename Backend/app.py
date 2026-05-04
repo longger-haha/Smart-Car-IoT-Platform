@@ -24,17 +24,19 @@ def create_app(config_class=Config):
     CORS(app, resources={r"/api/*": {"origins": "*"}})
 
     # ── 注册蓝图 ────────────────────────────────────────────────
-    from src.routes.auth    import auth_bp
-    from src.routes.devices import devices_bp
+    from src.routes.auth      import auth_bp
+    from src.routes.devices   import devices_bp
     from src.routes.telemetry import telemetry_bp
-    from src.routes.vehicle import vehicle_bp
-    from src.routes.audit   import audit_bp
+    from src.routes.vehicle   import vehicle_bp
+    from src.routes.audit     import audit_bp
+    from src.routes.dashboard import dashboard_bp
 
     app.register_blueprint(auth_bp,      url_prefix='/api/auth')
     app.register_blueprint(devices_bp,   url_prefix='/api/devices')
     app.register_blueprint(telemetry_bp, url_prefix='/api/telemetry')
     app.register_blueprint(vehicle_bp,   url_prefix='/api/vehicle')
     app.register_blueprint(audit_bp,     url_prefix='/api/audit')
+    app.register_blueprint(dashboard_bp, url_prefix='/api/dashboard')
 
     # ── 健康检查 ────────────────────────────────────────────────
     @app.get('/api/health')
@@ -50,5 +52,9 @@ if __name__ == '__main__':
     # 启动时同时连接 MQTT（长驻线程）
     from src.utils.mqtt_client import start_mqtt
     start_mqtt(app)
+
+    # 启动设备心跳超时检测线程
+    from src.utils.heartbeat_checker import start_heartbeat_checker
+    start_heartbeat_checker(app)
 
     app.run(host='0.0.0.0', port=5000, debug=app.config['DEBUG'])

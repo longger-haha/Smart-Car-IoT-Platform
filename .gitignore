@@ -21,3 +21,5 @@ Backend/.venv/
 .vscode/
 .idea/
 *.DS_Store
+
+Docs\COLLABORATION_GUIDE.md
