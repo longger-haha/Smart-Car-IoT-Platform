@@ -12,7 +12,7 @@ from datetime import datetime
 from flask import Blueprint, request, jsonify
 from flask_jwt_extended import create_access_token
 
-from app import db
+from src.extensions import db
 from src.models.user import User
 from src.models.audit_log import SecurityAuditLog
 

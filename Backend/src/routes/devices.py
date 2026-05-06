@@ -16,7 +16,7 @@ import string
 from flask import Blueprint, request, jsonify
 from flask_jwt_extended import jwt_required, get_jwt_identity, get_jwt
 
-from app import db
+from src.extensions import db
 from src.models.device import Device
 from src.models.user import User
 from src.models.telemetry import TelemetryPoint
@@ -57,9 +57,7 @@ def list_devices():
                 ...
             ],
             "total": 1
-        }
-    """
-    """
+        """
     claims = get_jwt()
     if claims.get('role') == 'admin':
         devices = Device.query.order_by(Device.registered_at.desc()).all()
@@ -123,8 +121,7 @@ def get_device_detail(device_id: str):
 @jwt_required()
 def register_device():
     """
-    注册新设备（挂载至当前租户），系统自动生成 Device_Secret。
-    注册新设备（挂载至当前租户），系统自动生成 Device_Secret。
+    注册新设备，系统自动生成 Device_Secret。
 
     Request JSON:
         {

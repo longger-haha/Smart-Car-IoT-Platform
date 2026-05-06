@@ -2,7 +2,7 @@
 User SQLAlchemy 模型 — 对应 `users` 表
 """
 from datetime import datetime
-from app import db
+from src.extensions import db
 
 
 class User(db.Model):

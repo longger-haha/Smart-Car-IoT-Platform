@@ -10,7 +10,7 @@ from flask import Blueprint, jsonify
 from flask_jwt_extended import jwt_required, get_jwt, get_jwt_identity
 from sqlalchemy import func
 
-from app import db
+from src.extensions import db
 from src.models.device import Device
 from src.models.user import User
 from src.models.telemetry import TelemetryPoint

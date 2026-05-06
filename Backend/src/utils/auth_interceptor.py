@@ -34,7 +34,7 @@ from flask_jwt_extended import verify_jwt_in_request, get_jwt
 def _write_audit(event_type: str, detail: str = None, target_device_id: str = None):
     """安全地将一条审计日志写入数据库，失败时静默忽略（避免审计本身引发 500）。"""
     try:
-        from app import db
+        from src.extensions import db
         from src.models.audit_log import SecurityAuditLog
 
         source_ip = request.remote_addr

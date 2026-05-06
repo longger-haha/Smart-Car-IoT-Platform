@@ -53,7 +53,7 @@
                 @mouseleave="sendCmd('stop')"
                 :disabled="!selectedDeviceId"
               >
-                <el-icon :size="28"><Left /></el-icon>
+                <el-icon :size="28"><ArrowLeft /></el-icon>
               </button>
               <button
                 class="dpad-btn dpad-center"
@@ -71,7 +71,7 @@
                 @mouseleave="sendCmd('stop')"
                 :disabled="!selectedDeviceId"
               >
-                <el-icon :size="28"><Right /></el-icon>
+                <el-icon :size="28"><ArrowRight /></el-icon>
               </button>
               <button
                 class="dpad-btn dpad-down"
@@ -145,7 +145,7 @@
 
 <script setup>
 import { ref, onMounted, onUnmounted, nextTick, watch } from 'vue'
-import { Position, MapLocation, Top, Bottom, Left, Right, VideoPause } from '@element-plus/icons-vue'
+import { Position, MapLocation, Top, Bottom, ArrowLeft, ArrowRight, VideoPause } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import AMapLoader from '@amap/amap-jsapi-loader'
 import { deviceAPI, vehicleAPI } from '@/api'

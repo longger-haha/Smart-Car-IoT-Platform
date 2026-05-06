@@ -77,7 +77,7 @@ def _on_message(client, userdata, msg):
 
 def _process_message(device_id: str, raw_payload: bytes):
     """在 Flask 应用上下文中处理消息，写入数据库"""
-    from app import db
+    from src.extensions import db
     from src.models.device import Device
     from src.models.telemetry import TelemetryPoint
     from src.models.audit_log import SecurityAuditLog

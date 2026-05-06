@@ -2,7 +2,7 @@
 TelemetryPoint SQLAlchemy 模型 — 对应 `telemetry_points` 表
 """
 from datetime import datetime
-from app import db
+from src.extensions import db
 
 
 class TelemetryPoint(db.Model):

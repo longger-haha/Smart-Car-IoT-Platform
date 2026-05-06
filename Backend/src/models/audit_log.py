@@ -2,7 +2,7 @@
 SecurityAuditLog SQLAlchemy 模型 — 对应 `security_audit_logs` 表
 """
 from datetime import datetime
-from app import db
+from src.extensions import db
 
 # 允许的事件类型
 AUDIT_EVENT_TYPES = ('replay', 'ddos', 'auth_fail', 'rbac_deny', 'sig_invalid')

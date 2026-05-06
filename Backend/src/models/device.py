@@ -2,7 +2,7 @@
 Device SQLAlchemy 模型 — 对应 `devices` 表（设备白名单）
 """
 from datetime import datetime
-from app import db
+from src.extensions import db
 
 
 class Device(db.Model):

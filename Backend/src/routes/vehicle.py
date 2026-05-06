@@ -14,7 +14,7 @@ import json
 
 from flask import Blueprint, request, jsonify
 
-from app import db
+from src.extensions import db
 from src.models.audit_log import SecurityAuditLog
 from src.utils.auth_interceptor import jwt_required_with_rbac, require_device_ownership
 from src.utils.mqtt_client import publish_command
