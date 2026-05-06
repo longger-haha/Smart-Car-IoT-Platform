@@ -1,16 +1,20 @@
 import axios from 'axios'
+import { ElMessage } from 'element-plus'
 import router from '@/router'
 
 const request = axios.create({
   baseURL: '/api',
   timeout: 10000,
+  headers: {
+    'Content-Type': 'application/json'
+  }
 })
 
 request.interceptors.request.use(
   (config) => {
-    const token = localStorage.getItem('access_token')
+    const token = localStorage.getItem('token')
     if (token) {
-      config.headers['Authorization'] = `Bearer ${token}`
+      config.headers.Authorization = `Bearer ${token}`
     }
     return config
   },

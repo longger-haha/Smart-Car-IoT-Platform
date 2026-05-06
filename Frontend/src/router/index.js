@@ -6,7 +6,7 @@ const routes = [
     path: '/login',
     name: 'Login',
     component: () => import('@/views/LoginView.vue'),
-    meta: { requiresAuth: false },
+    meta: { requiresAuth: false }
   },
   {
     path: '/',
@@ -44,7 +44,7 @@ const routes = [
 
 const router = createRouter({
   history: createWebHistory(),
-  routes,
+  routes
 })
 
 router.beforeEach((to, _from, next) => {
@@ -63,6 +63,8 @@ router.beforeEach((to, _from, next) => {
   } else {
     next()
   }
+
+  next()
 })
 
 export default router
