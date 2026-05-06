@@ -124,6 +124,7 @@ def get_device_detail(device_id: str):
 def register_device():
     """
     注册新设备（挂载至当前租户），系统自动生成 Device_Secret。
+    注册新设备（挂载至当前租户），系统自动生成 Device_Secret。
 
     Request JSON:
         {

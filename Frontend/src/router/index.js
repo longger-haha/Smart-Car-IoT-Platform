@@ -1,10 +1,7 @@
 import { createRouter, createWebHistory } from 'vue-router'
+import Layout from '@/components/Layout.vue'
 
 const routes = [
-  {
-    path: '/',
-    redirect: '/dashboard',
-  },
   {
     path: '/login',
     name: 'Login',
@@ -12,28 +9,36 @@ const routes = [
     meta: { requiresAuth: false },
   },
   {
-    path: '/dashboard',
-    name: 'Dashboard',
-    component: () => import('@/views/dashboard/DashboardView.vue'),
+    path: '/',
+    component: Layout,
+    redirect: '/dashboard',
     meta: { requiresAuth: true },
-  },
-  {
-    path: '/devices',
-    name: 'DeviceCenter',
-    component: () => import('@/views/device_center/DeviceCenterView.vue'),
-    meta: { requiresAuth: true },
-  },
-  {
-    path: '/control',
-    name: 'ControlPanel',
-    component: () => import('@/views/control_panel/ControlPanelView.vue'),
-    meta: { requiresAuth: true, requiresAdmin: true },
-  },
-  {
-    path: '/audit',
-    name: 'AuditLogs',
-    component: () => import('@/views/audit_logs/AuditLogsView.vue'),
-    meta: { requiresAuth: true },
+    children: [
+      {
+        path: 'dashboard',
+        name: 'Dashboard',
+        component: () => import('@/views/dashboard/DashboardView.vue'),
+        meta: { title: '仪表盘', requiresAuth: true },
+      },
+      {
+        path: 'devices',
+        name: 'DeviceCenter',
+        component: () => import('@/views/device_center/DeviceCenterView.vue'),
+        meta: { title: '设备中心', requiresAuth: true },
+      },
+      {
+        path: 'control',
+        name: 'ControlPanel',
+        component: () => import('@/views/control_panel/ControlPanelView.vue'),
+        meta: { title: '控制面板', requiresAuth: true, requiresAdmin: true },
+      },
+      {
+        path: 'audit',
+        name: 'AuditLogs',
+        component: () => import('@/views/audit_logs/AuditLogsView.vue'),
+        meta: { title: '审计日志', requiresAuth: true },
+      },
+    ],
   },
 ]
 
@@ -42,14 +47,19 @@ const router = createRouter({
   routes,
 })
 
-// 全局路由守卫：未登录跳转至 /login
 router.beforeEach((to, _from, next) => {
   const token = localStorage.getItem('access_token')
   if (to.meta.requiresAuth && !token) {
     next({ path: '/login', query: { redirect: to.fullPath } })
   } else if (to.path === '/login' && token) {
-    // 已登录时访问 /login 直接跳转 Dashboard
     next({ path: '/dashboard' })
+  } else if (to.meta.requiresAdmin) {
+    const role = localStorage.getItem('user_role')
+    if (role !== 'admin') {
+      next({ path: '/dashboard' })
+    } else {
+      next()
+    }
   } else {
     next()
   }
