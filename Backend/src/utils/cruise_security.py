@@ -211,7 +211,7 @@ def record_abnormal_event(event_type: str, device_id: str, detail: str, severity
         'device_id': device_id,
         'detail': detail,
         'severity': severity,
-        'timestamp': datetime.utcnow().isoformat(),
+        'timestamp': datetime.now().isoformat(),
     }
     _abnormal_events[device_id].append(event)
 
@@ -234,7 +234,7 @@ def get_device_risk_score(device_id: str) -> dict:
       - 签名验证失败次数
     """
     events = _abnormal_events.get(device_id, [])
-    recent = [e for e in events if e['timestamp'] >= (datetime.utcnow() - timedelta(hours=1)).isoformat()]
+    recent = [e for e in events if e['timestamp'] >= (datetime.now() - timedelta(hours=1)).isoformat()]
 
     score = 0
     factors = []

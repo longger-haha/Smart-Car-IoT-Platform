@@ -58,7 +58,7 @@ def login():
         return jsonify({'error': '用户名或密码错误'}), 401
 
     # 更新最近登录时间
-    user.last_login_at = datetime.utcnow()
+    user.last_login_at = datetime.now()
     db.session.commit()
 
     # 生成 JWT，将 role 写入 additional_claims

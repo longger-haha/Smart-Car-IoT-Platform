@@ -61,14 +61,19 @@ def _on_message(client, userdata, msg):
     topic_type = parts[0] if len(parts) > 1 else 'unknown'
     device_id = parts[1] if len(parts) > 1 else 'unknown'
 
-    if topic_type == 'sensor':
-        _process_telemetry(device_id, payload)
-    elif topic_type == 'nav':
-        _process_nav_event(device_id, payload)
-    elif topic_type == 'heartbeat':
-        _process_heartbeat(device_id, payload)
-    else:
-        logger.warning(f'[MQTT] Unknown topic: {topic}')
+    if _flask_app is None:
+        logger.error("[MQTT] _flask_app is None, cannot process message")
+        return
+
+    with _flask_app.app_context():
+        if topic_type == 'sensor':
+            _process_telemetry(device_id, payload)
+        elif topic_type == 'nav':
+            _process_nav_event(device_id, payload)
+        elif topic_type == 'heartbeat':
+            _process_heartbeat(device_id, payload)
+        else:
+            logger.warning(f'[MQTT] Unknown topic: {topic}')
 
 
 def _process_telemetry(device_id: str, raw_payload: bytes):
@@ -154,7 +159,7 @@ def _process_telemetry(device_id: str, raw_payload: bytes):
             ultrasonic_cm  = data.get('ultrasonic_cm'),
             speed_pwm      = data.get('speed_pwm'),
             raw_ciphertext = raw_ciphertext,
-            recorded_at    = datetime.utcnow(),
+            recorded_at    = datetime.now(),
         )
         db.session.add(point)
 
@@ -283,7 +288,7 @@ def _process_nav_event(device_id: str, raw_payload: bytes):
         wp_index    = data.get('wp_index'),
         wp_total    = data.get('wp_total'),
         state       = data.get('state'),
-        occurred_at = datetime.utcnow(),
+        occurred_at = datetime.now(),
     )
     db.session.add(event)
 

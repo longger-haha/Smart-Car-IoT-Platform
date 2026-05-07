@@ -22,7 +22,7 @@ def _check_heartbeats(app):
             _Device = _Device_ref
 
     with app.app_context():
-        cutoff = datetime.utcnow() - timedelta(seconds=HEARTBEAT_TIMEOUT_SECONDS)
+        cutoff = datetime.now() - timedelta(seconds=HEARTBEAT_TIMEOUT_SECONDS)
         stale_devices = (
             _Device.query
             .filter_by(status='online')

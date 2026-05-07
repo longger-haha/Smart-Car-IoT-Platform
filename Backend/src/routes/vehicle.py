@@ -320,7 +320,7 @@ def get_cruise_status(device_id: str):
     stats = {}
     if latest_event and latest_event.event_type == 'CRUISE_STARTED':
         started = latest_event.occurred_at
-        cruise_duration = int((datetime.utcnow() - started).total_seconds()) if started else 0
+        cruise_duration = int((datetime.now() - started).total_seconds()) if started else 0
         reached_count = (
             NavigationEvent.query
             .filter_by(device_id=device_id, event_type='WAYPOINT_REACHED')
@@ -422,7 +422,7 @@ def get_trajectory(device_id: str):
         hours = 1
         limit = 500
 
-    since = datetime.utcnow() - timedelta(hours=hours)
+    since = datetime.now() - timedelta(hours=hours)
 
     points = (
         TelemetryPoint.query

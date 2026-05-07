@@ -28,7 +28,7 @@ class Device(db.Model):
 
     def touch(self):
         """更新心跳时间并标记在线"""
-        self.last_seen_at = datetime.utcnow()
+        self.last_seen_at = datetime.now()
         self.status = 'online'
 
     def to_dict(self, include_secret=False):
