@@ -15,19 +15,18 @@ services:
     restart: unless-stopped
     environment:
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-rootpass}
-      MYSQL_DATABASE:      ${MYSQL_DATABASE:-smartrover_db}
-      MYSQL_USER:          ${MYSQL_USER:-sruser}
-      MYSQL_PASSWORD:      ${MYSQL_PASSWORD:-srpass123}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-smartrover_db}
+      MYSQL_USER: ${MYSQL_USER:-sruser}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-srpass123}
     ports:
-      - "3306:3306"
+      - "3307:3306"
     volumes:
       - mysql_data:/var/lib/mysql
       - ./Docs/sql/init_struct.sql:/docker-entrypoint-initdb.d/init_struct.sql:ro
     networks:
       - smartrover_net
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost",
-             "-u", "${MYSQL_USER:-sruser}", "-p${MYSQL_PASSWORD:-srpass123}"]
+      test: [ "CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "${MYSQL_USER:-sruser}", "-p${MYSQL_PASSWORD:-srpass123}" ]
       interval: 10s
       timeout: 5s
       retries: 10
@@ -55,20 +54,20 @@ services:
     container_name: smartrover-backend
     restart: unless-stopped
     environment:
-      FLASK_SECRET_KEY:      ${FLASK_SECRET_KEY}
-      FLASK_DEBUG:           ${FLASK_DEBUG:-false}
-      JWT_SECRET_KEY:        ${JWT_SECRET_KEY}
-      MYSQL_HOST:            mysql
-      MYSQL_PORT:            ${MYSQL_PORT:-3306}
-      MYSQL_USER:            ${MYSQL_USER:-sruser}
-      MYSQL_PASSWORD:        ${MYSQL_PASSWORD:-srpass123}
-      MYSQL_DATABASE:        ${MYSQL_DATABASE:-smartrover_db}
-      MQTT_BROKER_HOST:      mosquitto
-      MQTT_BROKER_PORT:      ${MQTT_BROKER_PORT:-1883}
-      MQTT_USERNAME:         ${MQTT_USERNAME:-smartrover}
-      MQTT_PASSWORD:         ${MQTT_PASSWORD}
+      FLASK_SECRET_KEY: ${FLASK_SECRET_KEY}
+      FLASK_DEBUG: ${FLASK_DEBUG:-false}
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY}
+      MYSQL_HOST: mysql
+      MYSQL_PORT: ${MYSQL_PORT:-3306}
+      MYSQL_USER: ${MYSQL_USER:-sruser}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-srpass123}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-smartrover_db}
+      MQTT_BROKER_HOST: mosquitto
+      MQTT_BROKER_PORT: ${MQTT_BROKER_PORT:-1883}
+      MQTT_USERNAME: ${MQTT_USERNAME:-smartrover}
+      MQTT_PASSWORD: ${MQTT_PASSWORD}
       REPLAY_WINDOW_SECONDS: ${REPLAY_WINDOW_SECONDS:-30}
-      AES_KEY:               ${AES_KEY:-SmartRover2026!!}
+      AES_KEY: ${AES_KEY:-SmartRover2026!!}
     ports:
       - "5000:5000"
     depends_on:
@@ -87,7 +86,7 @@ services:
     container_name: smartrover-frontend
     restart: unless-stopped
     ports:
-      - "80:80"
+      - "8081:80"
     depends_on:
       - backend
     networks:
@@ -99,7 +98,7 @@ volumes:
   mosquitto_data:
   mosquitto_log:
 
-# ── 私有网络 ─────────────────────────────────────────────────
+    # ── 私有网络 ─────────────────────────────────────────────────
 networks:
   smartrover_net:
     driver: bridge
