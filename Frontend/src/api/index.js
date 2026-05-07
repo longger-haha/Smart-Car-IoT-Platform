@@ -42,9 +42,9 @@ export const authAPI = {
 }
 
 export const deviceAPI = {
-  list: () => request.get('/devices'),
+  list: () => request.get('/devices/'),
   getDetail: (deviceId) => request.get(`/devices/${deviceId}`),
-  register: (data) => request.post('/devices', data),
+  register: (data) => request.post('/devices/', data),
   delete: (deviceId) => request.delete(`/devices/${deviceId}`),
 }
 
