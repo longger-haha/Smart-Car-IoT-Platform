@@ -22,11 +22,11 @@
           <el-icon><Monitor /></el-icon>
           <template #title>设备中心</template>
         </el-menu-item>
-        <el-menu-item index="/control" v-if="isAdmin">
+        <el-menu-item index="/control">
           <el-icon><Position /></el-icon>
           <template #title>控制面板</template>
         </el-menu-item>
-        <el-menu-item index="/audit">
+        <el-menu-item index="/audit" v-if="isAdmin">
           <el-icon><Document /></el-icon>
           <template #title>审计日志</template>
         </el-menu-item>

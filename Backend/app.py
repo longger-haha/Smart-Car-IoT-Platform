@@ -17,6 +17,7 @@ def create_app(config_class=Config):
     import src.models.device
     import src.models.telemetry
     import src.models.audit_log
+    import src.models.navigation_event
 
     with app.app_context():
         db.create_all()

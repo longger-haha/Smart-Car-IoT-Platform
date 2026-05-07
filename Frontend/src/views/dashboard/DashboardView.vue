@@ -67,6 +67,51 @@
       <el-col :span="24">
         <el-card shadow="never">
           <template #header>
+            <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
+              <span>🚗 车辆实时轨迹</span>
+              <el-select v-model="dashDeviceId" placeholder="选择设备" size="small" style="width:200px;" @change="onDashDeviceChange">
+                <el-option
+                  v-for="d in deviceList"
+                  :key="d.device_id"
+                  :label="`${d.name} (${d.status})`"
+                  :value="d.device_id"
+                />
+              </el-select>
+            </div>
+          </template>
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;flex-wrap:wrap;">
+            <span style="font-size:12px;color:#909399;">🗺️ API Key:</span>
+            <el-input
+              v-model="dashAmapKeyInput"
+              placeholder="高德地图 Key"
+              :show-password="true"
+              size="small"
+              style="width:280px;"
+              clearable
+            />
+            <el-button type="primary" size="small" @click="applyDashAmapKey" :loading="dashMapLoading">应用</el-button>
+            <el-tag v-if="dashHasValidKey" type="success" size="small" effect="light">✅</el-tag>
+            <el-tag v-else type="warning" size="small" effect="light">⚠️</el-tag>
+          </div>
+          <div id="dash-trajectory-map" class="chart-container" style="height:360px;"></div>
+          <div style="margin-top:10px;display:flex;gap:12px;flex-wrap:wrap;">
+            <el-tag size="small" type="success">在线设备: {{ stats.online_devices ?? 0 }}</el-tag>
+            <el-tag size="small">总设备数: {{ stats.total_devices ?? 0 }}</el-tag>
+            <el-tag size="small" type="warning">告警: {{ stats.critical_alerts ?? 0 }}</el-tag>
+            <span v-if="dashPositionData" style="font-size:13px;color:#666;margin-left:auto;">
+              📍 {{ dashPositionData.lat?.toFixed(5) || '--' }}, {{ dashPositionData.lng?.toFixed(5) || '--' }}
+              · PWM {{ dashPositionData.speed_pwm || '--' }}
+              · {{ dashPositionData.temperature ? dashPositionData.temperature + '°C' : '' }}
+            </span>
+          </div>
+        </el-card>
+      </el-col>
+    </el-row>
+
+    <el-row :gutter="16" style="margin-top: 20px;">
+      <el-col :span="24">
+        <el-card shadow="never">
+          <template #header>
             <span>最近告警事件</span>
           </template>
           <el-table :data="stats.recent_alerts || []" stripe size="small" empty-text="暂无告警记录">
@@ -104,10 +149,12 @@
 </template>
 
 <script setup>
-import { ref, reactive, onMounted, onUnmounted, nextTick, watch } from 'vue'
+import { ref, reactive, onMounted, onUnmounted, nextTick, watch, computed } from 'vue'
 import * as echarts from 'echarts'
 import { Monitor, Connection, Warning, Document } from '@element-plus/icons-vue'
-import { dashboardAPI } from '@/api'
+import { ElMessage } from 'element-plus'
+import { dashboardAPI, vehicleAPI, deviceAPI } from '@/api'
+import AMapLoader from '@amap/amap-jsapi-loader'
 
 const stats = reactive({
   total_devices: 0,
@@ -124,6 +171,17 @@ const gaugeChartRef = ref(null)
 let pieChart = null
 let gaugeChart = null
 let timer = null
+
+const deviceList = ref([])
+const dashDeviceId = ref('')
+const dashAmapKeyInput = ref(localStorage.getItem('amap_api_key') || import.meta.env.VITE_AMAP_API_KEY || '')
+const dashMapLoading = ref(false)
+const dashHasValidKey = computed(() => !!dashAmapKeyInput.value?.trim())
+const dashPositionData = ref(null)
+let dashTrajectoryMap = null
+let dashPositionMarker = null
+let dashTrajectoryPolyline = null
+let dashPosTimer = null
 
 async function fetchStats() {
   try {
@@ -227,13 +285,142 @@ function formatTime(timeStr) {
   return new Date(timeStr).toLocaleString('zh-CN')
 }
 
+async function loadDashDevices() {
+  try {
+    const data = await deviceAPI.list()
+    deviceList.value = data.devices || data || []
+    if (deviceList.value.length > 0 && !dashDeviceId.value) {
+      dashDeviceId.value = deviceList.value[0].device_id
+      initDashTrajectoryMap()
+      fetchDashPosition()
+      startDashPolling()
+    }
+  } catch (e) { console.error('获取设备列表失败', e) }
+}
+
+async function fetchDashPosition() {
+  if (!dashDeviceId.value) return
+  try {
+    const res = await vehicleAPI.getPosition(dashDeviceId.value)
+    dashPositionData.value = res
+    drawDashPositionMarker(res)
+  } catch (e) {}
+}
+
+function drawDashPositionMarker(pos) {
+  if (!dashTrajectoryMap || !pos.lat || !pos.lng) return
+  if (dashPositionMarker) {
+    dashPositionMarker.setPosition([pos.lng, pos.lat])
+  } else {
+    dashPositionMarker = new AMap.Marker({
+      position: [pos.lng, pos.lat],
+      icon: new AMap.Icon({
+        image: '//a.amap.com/jsapi_demos/static/demo-center/icons/poi-marker-red.png',
+        size: [25, 34], imageSize: [25, 34],
+      }),
+    })
+    dashPositionMarker.setMap(dashTrajectoryMap)
+  }
+}
+
+async function refreshDashTrajectory() {
+  if (!dashDeviceId.value) return
+  try {
+    const res = await vehicleAPI.getTrajectory(dashDeviceId.value, 2, 2000)
+    if (res.points && res.points.length > 1) {
+      drawDashTrajectory(res.points)
+      if (res.bounds) {
+        dashTrajectoryMap.setBounds([[res.bounds.min_lng, res.bounds.min_lat], [res.bounds.max_lng, res.bounds.max_lat]])
+      }
+    }
+  } catch (e) {}
+}
+
+function drawDashTrajectory(points) {
+  if (!dashTrajectoryMap || points.length < 2) return
+  const path = points.map(p => [p.lng, p.lat])
+  if (dashTrajectoryPolyline) dashTrajectoryMap.remove(dashTrajectoryPolyline)
+  dashTrajectoryPolyline = new AMap.Polyline({
+    path,
+    strokeColor: '#f56c6c',
+    strokeWeight: 4,
+    strokeOpacity: 0.85,
+    lineJoin: 'round',
+  })
+  dashTrajectoryPolyline.setMap(dashTrajectoryMap)
+}
+
+function applyDashAmapKey() {
+  const key = dashAmapKeyInput.value?.trim()
+  if (!key) {
+    ElMessage.warning('请输入有效的 API Key')
+    return
+  }
+  localStorage.setItem('amap_api_key', key)
+  dashMapLoading.value = true
+  if (dashTrajectoryMap) { dashTrajectoryMap.destroy(); dashTrajectoryMap = null }
+  if (dashPositionMarker) { dashPositionMarker.setMap(null); dashPositionMarker = null }
+  if (dashTrajectoryPolyline) { dashTrajectoryMap?.remove(dashTrajectoryPolyline); dashTrajectoryPolyline = null }
+
+  const el = document.getElementById('dash-trajectory-map')
+  if (el) el.innerHTML = ''
+
+  AMapLoader.load({ key: key, version: '2.0' }).then((AMap) => {
+    dashTrajectoryMap = new AMap.Map('dash-trajectory-map', {
+      zoom: 15, center: [116.397428, 39.90923], viewMode: '2D',
+    })
+    refreshDashTrajectory()
+    drawDashPositionMarker(dashPositionData.value)
+    dashMapLoading.value = false
+    ElMessage.success('地图加载成功')
+  }).catch((e) => {
+    console.warn('仪表盘地图加载失败:', e)
+    dashMapLoading.value = false
+    ElMessage.error('地图加载失败，请检查 Key 是否正确')
+  })
+}
+
+function initDashTrajectoryMap() {
+  if (!AMapLoader) return
+  const amapKey = dashAmapKeyInput.value?.trim() || ''
+  if (!amapKey) {
+    const el = document.getElementById('dash-trajectory-map')
+    if (el) el.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100%;color:#909399;font-size:14px;background:#f5f7fa;border-radius:6px;">⚠️ 请输入高德地图 API Key 并点击"应用"</div>'
+    return
+  }
+  applyDashAmapKey()
+}
+
+function onDashDeviceChange(deviceId) {
+  stopDashPolling()
+  dashPositionData.value = null
+  if (dashPositionMarker) { dashPositionMarker.setMap(null); dashPositionMarker = null }
+  if (dashTrajectoryPolyline) { dashTrajectoryMap.remove(dashTrajectoryPolyline); dashTrajectoryPolyline = null }
+  if (deviceId) {
+    initDashTrajectoryMap()
+    fetchDashPosition()
+    startDashPolling()
+  }
+}
+
+function startDashPolling() {
+  stopDashPolling()
+  dashPosTimer = setInterval(() => { fetchDashPosition(); refreshDashTrajectory() }, 5000)
+}
+
+function stopDashPolling() {
+  if (dashPosTimer) { clearInterval(dashPosTimer); dashPosTimer = null }
+}
+
 onMounted(() => {
   fetchStats()
+  loadDashDevices()
   timer = setInterval(fetchStats, 15000)
 })
 
 onUnmounted(() => {
   if (timer) clearInterval(timer)
+  stopDashPolling()
   pieChart?.dispose()
   gaugeChart?.dispose()
 })

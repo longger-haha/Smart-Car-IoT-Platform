@@ -67,6 +67,18 @@ export const vehicleAPI = {
       waypoints,
     }),
   getLastRoute: (deviceId) => request.get(`/vehicle/route/${deviceId}`),
+
+  getPosition: (deviceId) => request.get(`/vehicle/position/${deviceId}`),
+  getNavEvents: (deviceId, eventType = null, limit = 50) =>
+    request.get(`/vehicle/nav-events/${deviceId}`, {
+      params: { event_type: eventType, limit },
+    }),
+  getCruiseStatus: (deviceId) => request.get(`/vehicle/status/${deviceId}`),
+  getTrajectory: (deviceId, hours = 1, limit = 500) =>
+    request.get(`/vehicle/trajectory/${deviceId}`, {
+      params: { hours, limit },
+    }),
+  getRisk: (deviceId) => request.get(`/vehicle/risk/${deviceId}`),
 }
 
 export const auditAPI = {

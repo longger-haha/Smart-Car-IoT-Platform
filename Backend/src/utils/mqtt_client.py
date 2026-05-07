@@ -35,7 +35,9 @@ def _on_connect(client, userdata, flags, rc, properties=None):
     if rc == 0:
         logger.info('[MQTT] Connected to broker successfully')
         client.subscribe('sensor/#', qos=1)
-        logger.info('[MQTT] Subscribed to sensor/#')
+        client.subscribe('nav/#', qos=1)
+        client.subscribe('heartbeat/#', qos=1)
+        logger.info('[MQTT] Subscribed to sensor/#, nav/#, heartbeat/#')
     else:
         logger.error(f'[MQTT] Connection failed, rc={rc}')
 
@@ -47,35 +49,29 @@ def _on_disconnect(client, userdata, disconnect_flags, rc, properties=None):
 
 def _on_message(client, userdata, msg):
     """
-    处理 sensor/<device_id> 上报的遥测消息。
-
-    预期 payload 格式（AES 加密前的明文 JSON）:
-        {
-            "device_id":   "aa:bb:cc:dd:ee:ff",
-            "timestamp":   1714567890,
-            "signature":   "<hmac_sha256_hex>",
-            "latitude":    39.9042,
-            "longitude":   116.4074,
-            "temperature": 26.5,
-            "humidity":    65.0,
-            "ultrasonic_cm": 120.3,
-            "speed_pwm":   200
-        }
-
-    消息格式: AES 加密后的 base64 字符串（"<iv_b64>:<ct_b64>"）
+    处理 MQTT 消息:
+      - sensor/<device_id> → 遥测数据（加密）
+      - nav/<device_id>   → 导航事件
+      - heartbeat/<device_id> → 心跳保活
     """
     topic   = msg.topic
     payload = msg.payload
 
-    # 从 topic 中提取 device_id（格式: sensor/<device_id>）
     parts     = topic.split('/', 1)
+    topic_type = parts[0] if len(parts) > 1 else 'unknown'
     device_id = parts[1] if len(parts) > 1 else 'unknown'
 
-    with _flask_app.app_context():
-        _process_message(device_id, payload)
+    if topic_type == 'sensor':
+        _process_telemetry(device_id, payload)
+    elif topic_type == 'nav':
+        _process_nav_event(device_id, payload)
+    elif topic_type == 'heartbeat':
+        _process_heartbeat(device_id, payload)
+    else:
+        logger.warning(f'[MQTT] Unknown topic: {topic}')
 
 
-def _process_message(device_id: str, raw_payload: bytes):
+def _process_telemetry(device_id: str, raw_payload: bytes):
     """在 Flask 应用上下文中处理消息，写入数据库"""
     from src.extensions import db
     from src.models.device import Device
@@ -263,3 +259,68 @@ def publish_command(device_id: str, payload: dict) -> bool:
     else:
         logger.error(f'[MQTT] Publish to {topic} failed, rc={result.rc}')
         return False
+
+
+def _process_nav_event(device_id: str, raw_payload: bytes):
+    """处理导航事件消息，写入 navigation_events 表"""
+    from src.extensions import db
+    from src.models.navigation_event import NavigationEvent
+    from flask import current_app
+    from datetime import datetime
+
+    try:
+        data = json.loads(raw_payload)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        logger.warning(f'[NAV] JSON parse failed for device={device_id!r}')
+        return
+
+    event = NavigationEvent(
+        device_id   = data.get('device_id', device_id),
+        event_type  = data.get('event_type', 'UNKNOWN')[:32],
+        detail      = data.get('detail', ''),
+        lat         = data.get('lat'),
+        lng         = data.get('lng'),
+        wp_index    = data.get('wp_index'),
+        wp_total    = data.get('wp_total'),
+        state       = data.get('state'),
+        occurred_at = datetime.utcnow(),
+    )
+    db.session.add(event)
+
+    try:
+        db.session.commit()
+        logger.info(
+            f'[NAV] Event recorded: device={device_id!r} type={event.event_type!r} '
+            f'detail={event.detail!r}'
+        )
+    except Exception as exc:
+        db.session.rollback()
+        logger.warning(f'[NAV] Failed to write nav event: {exc}')
+
+    from src.routes.vehicle import _nav_status_cache
+    if device_id in _nav_status_cache:
+        _nav_status_cache[device_id]['state'] = data.get('state', 'unknown')
+        wp_idx = data.get('wp_index')
+        if wp_idx is not None:
+            _nav_status_cache[device_id]['wp_index'] = wp_idx
+
+
+def _process_heartbeat(device_id: str, raw_payload: bytes):
+    """处理心跳消息，更新设备在线状态"""
+    from src.extensions import db
+    from src.models.device import Device
+    from flask import current_app
+
+    try:
+        data = json.loads(raw_payload)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return
+
+    device = Device.query.filter_by(device_id=device_id).first()
+    if device:
+        device.touch()
+        try:
+            db.session.commit()
+        except Exception as exc:
+            db.session.rollback()
+            logger.warning(f'[HB] Heartbeat update failed for {device_id!r}: {exc}')

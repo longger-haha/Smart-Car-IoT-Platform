@@ -30,13 +30,13 @@ const routes = [
         path: 'control',
         name: 'ControlPanel',
         component: () => import('@/views/control_panel/ControlPanelView.vue'),
-        meta: { title: '控制面板', requiresAuth: true, requiresAdmin: true },
+        meta: { title: '控制面板', requiresAuth: true },
       },
       {
         path: 'audit',
         name: 'AuditLogs',
         component: () => import('@/views/audit_logs/AuditLogsView.vue'),
-        meta: { title: '审计日志', requiresAuth: true },
+        meta: { title: '审计日志', requiresAuth: true, requiresAdmin: true },
       },
     ],
   },
@@ -63,8 +63,6 @@ router.beforeEach((to, _from, next) => {
   } else {
     next()
   }
-
-  next()
 })
 
 export default router

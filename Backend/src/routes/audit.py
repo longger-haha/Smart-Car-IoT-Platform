@@ -7,7 +7,7 @@ T034 [US4]: 审计日志查询接口
 """
 
 from flask import Blueprint, request, jsonify
-from flask_jwt_extended import jwt_required
+from flask_jwt_extended import jwt_required, get_jwt
 
 from src.models.audit_log import SecurityAuditLog, AUDIT_EVENT_TYPES
 
@@ -20,6 +20,10 @@ MAX_LIMIT     = 500
 @audit_bp.get('/logs')
 @jwt_required()
 def get_logs():
+    claims = get_jwt()
+    if claims.get('role') != 'admin':
+        return jsonify({'error': '权限不足，仅管理员可查看审计日志'}), 403
+
     """
     获取安全审计日志（最新的在前）
 
