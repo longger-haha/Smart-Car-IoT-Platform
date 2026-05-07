@@ -79,20 +79,7 @@
               </el-select>
             </div>
           </template>
-          <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;flex-wrap:wrap;">
-            <span style="font-size:12px;color:#909399;">🗺️ API Key:</span>
-            <el-input
-              v-model="dashAmapKeyInput"
-              placeholder="高德地图 Key"
-              :show-password="true"
-              size="small"
-              style="width:280px;"
-              clearable
-            />
-            <el-button type="primary" size="small" @click="applyDashAmapKey" :loading="dashMapLoading">应用</el-button>
-            <el-tag v-if="dashHasValidKey" type="success" size="small" effect="light">✅</el-tag>
-            <el-tag v-else type="warning" size="small" effect="light">⚠️</el-tag>
-          </div>
+
           <div id="dash-trajectory-map" class="chart-container" style="height:360px;"></div>
           <div style="margin-top:10px;display:flex;gap:12px;flex-wrap:wrap;">
             <el-tag size="small" type="success">在线设备: {{ stats.online_devices ?? 0 }}</el-tag>
@@ -149,12 +136,13 @@
 </template>
 
 <script setup>
-import { ref, reactive, onMounted, onUnmounted, nextTick, watch, computed } from 'vue'
+import { ref, reactive, onMounted, onUnmounted, nextTick, watch } from 'vue'
 import * as echarts from 'echarts'
 import { Monitor, Connection, Warning, Document } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { dashboardAPI, vehicleAPI, deviceAPI } from '@/api'
 import AMapLoader from '@amap/amap-jsapi-loader'
+import { AMAP_KEY, AMAP_VERSION, AMAP_SECURITY_KEY } from '@/config/amap'
 
 const stats = reactive({
   total_devices: 0,
@@ -174,14 +162,13 @@ let timer = null
 
 const deviceList = ref([])
 const dashDeviceId = ref('')
-const dashAmapKeyInput = ref(localStorage.getItem('amap_api_key') || import.meta.env.VITE_AMAP_API_KEY || '')
 const dashMapLoading = ref(false)
-const dashHasValidKey = computed(() => !!dashAmapKeyInput.value?.trim())
 const dashPositionData = ref(null)
 let dashTrajectoryMap = null
 let dashPositionMarker = null
 let dashTrajectoryPolyline = null
 let dashPosTimer = null
+let dashRequestGen = 0  // 请求代次，防止切换设备时旧请求的响应覆盖新地图
 
 async function fetchStats() {
   try {
@@ -291,7 +278,6 @@ async function loadDashDevices() {
     deviceList.value = data.devices || data || []
     if (deviceList.value.length > 0 && !dashDeviceId.value) {
       dashDeviceId.value = deviceList.value[0].device_id
-      initDashTrajectoryMap()
       fetchDashPosition()
       startDashPolling()
     }
@@ -325,12 +311,14 @@ function drawDashPositionMarker(pos) {
 
 async function refreshDashTrajectory() {
   if (!dashDeviceId.value) return
+  const gen = dashRequestGen  // 记录当前代次
   try {
     const res = await vehicleAPI.getTrajectory(dashDeviceId.value, 2, 2000)
+    if (gen !== dashRequestGen) return  // 已切换设备，丢弃此响应
     if (res.points && res.points.length > 1) {
       drawDashTrajectory(res.points)
-      if (res.bounds) {
-        dashTrajectoryMap.setBounds([[res.bounds.min_lng, res.bounds.min_lat], [res.bounds.max_lng, res.bounds.max_lat]])
+      if (dashTrajectoryMap && dashTrajectoryPolyline) {
+        dashTrajectoryMap.setFitView([dashTrajectoryPolyline, dashPositionMarker].filter(Boolean))
       }
     }
   } catch (e) {}
@@ -350,55 +338,47 @@ function drawDashTrajectory(points) {
   dashTrajectoryPolyline.setMap(dashTrajectoryMap)
 }
 
-function applyDashAmapKey() {
-  const key = dashAmapKeyInput.value?.trim()
-  if (!key) {
-    ElMessage.warning('请输入有效的 API Key')
-    return
-  }
-  localStorage.setItem('amap_api_key', key)
+function initDashTrajectoryMap() {
+  if (!AMapLoader) return
   dashMapLoading.value = true
   if (dashTrajectoryMap) { dashTrajectoryMap.destroy(); dashTrajectoryMap = null }
   if (dashPositionMarker) { dashPositionMarker.setMap(null); dashPositionMarker = null }
   if (dashTrajectoryPolyline) { dashTrajectoryMap?.remove(dashTrajectoryPolyline); dashTrajectoryPolyline = null }
 
   const el = document.getElementById('dash-trajectory-map')
-  if (el) el.innerHTML = ''
+  if (!el) return
+  el.innerHTML = ''
 
-  AMapLoader.load({ key: key, version: '2.0' }).then((AMap) => {
+  // 设置安全密钥
+  if (AMAP_SECURITY_KEY) {
+    window._AMapSecurityConfig = { securityJsCode: AMAP_SECURITY_KEY }
+  }
+
+  AMapLoader.load({ key: AMAP_KEY, version: AMAP_VERSION }).then((AMap) => {
     dashTrajectoryMap = new AMap.Map('dash-trajectory-map', {
       zoom: 15, center: [116.397428, 39.90923], viewMode: '2D',
     })
-    refreshDashTrajectory()
-    drawDashPositionMarker(dashPositionData.value)
+    if (dashDeviceId.value) refreshDashTrajectory()
+    if (dashPositionData.value) drawDashPositionMarker(dashPositionData.value)
     dashMapLoading.value = false
-    ElMessage.success('地图加载成功')
   }).catch((e) => {
     console.warn('仪表盘地图加载失败:', e)
     dashMapLoading.value = false
-    ElMessage.error('地图加载失败，请检查 Key 是否正确')
+    ElMessage.error('地图组件加载失败')
   })
-}
-
-function initDashTrajectoryMap() {
-  if (!AMapLoader) return
-  const amapKey = dashAmapKeyInput.value?.trim() || ''
-  if (!amapKey) {
-    const el = document.getElementById('dash-trajectory-map')
-    if (el) el.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100%;color:#909399;font-size:14px;background:#f5f7fa;border-radius:6px;">⚠️ 请输入高德地图 API Key 并点击"应用"</div>'
-    return
-  }
-  applyDashAmapKey()
 }
 
 function onDashDeviceChange(deviceId) {
   stopDashPolling()
+  dashRequestGen++  // 递增代次，令所有正在飞行的旧请求失效
   dashPositionData.value = null
   if (dashPositionMarker) { dashPositionMarker.setMap(null); dashPositionMarker = null }
-  if (dashTrajectoryPolyline) { dashTrajectoryMap.remove(dashTrajectoryPolyline); dashTrajectoryPolyline = null }
+  if (dashTrajectoryPolyline) { dashTrajectoryMap?.remove(dashTrajectoryPolyline); dashTrajectoryPolyline = null }
+  // 重置地图视角到默认中心
+  if (dashTrajectoryMap) dashTrajectoryMap.setZoomAndCenter(15, [116.397428, 39.90923])
   if (deviceId) {
-    initDashTrajectoryMap()
     fetchDashPosition()
+    refreshDashTrajectory()
     startDashPolling()
   }
 }
@@ -412,9 +392,11 @@ function stopDashPolling() {
   if (dashPosTimer) { clearInterval(dashPosTimer); dashPosTimer = null }
 }
 
-onMounted(() => {
+onMounted(async () => {
   fetchStats()
-  loadDashDevices()
+  await loadDashDevices()
+  await nextTick()
+  initDashTrajectoryMap()
   timer = setInterval(fetchStats, 15000)
 })
 

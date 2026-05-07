@@ -5,26 +5,7 @@
         <h2 style="margin-bottom: 8px;">🚗 车辆控制台</h2>
       </el-col>
 
-      <el-col :span="24">
-        <el-card shadow="hover" class="panel-card" style="margin-bottom:16px;">
-          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
-            <span style="font-size:13px;color:#606266;white-space:nowrap;">🗺️ 高德地图 API Key:</span>
-            <el-input
-              v-model="amapKeyInput"
-              placeholder="请输入高德地图 Web端(JS API) Key"
-              :show-password="true"
-              size="small"
-              style="width:380px;"
-              clearable
-            />
-            <el-button type="primary" size="small" @click="applyAmapKey" :loading="mapLoading">
-              应用并加载地图
-            </el-button>
-            <el-tag v-if="hasValidAmapKey" type="success" size="small" effect="light">✅ 已配置</el-tag>
-            <el-tag v-else type="warning" size="small" effect="light">⚠️ 未配置</el-tag>
-          </div>
-        </el-card>
-      </el-col>
+
 
       <el-col :span="6">
         <el-card shadow="hover" class="panel-card">
@@ -220,6 +201,7 @@
 import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue'
 import { ElMessage } from 'element-plus'
 import AMapLoader from '@amap/amap-jsapi-loader'
+import { AMAP_KEY, AMAP_VERSION, AMAP_SECURITY_KEY } from '@/config/amap'
 import { vehicleAPI, deviceAPI } from '@/api'
 
 const deviceList = ref([])
@@ -228,9 +210,7 @@ const commandLoading = ref(false)
 const routeLoading = ref(false)
 const waypoints = ref([])
 const lastRouteInfo = ref(null)
-const amapKeyInput = ref(localStorage.getItem('amap_api_key') || import.meta.env.VITE_AMAP_API_KEY || '')
 const mapLoading = ref(false)
-const hasValidAmapKey = computed(() => !!amapKeyInput.value?.trim())
 
 let map = null
 let trajectoryMap = null
@@ -246,17 +226,8 @@ const positionData = ref(null)
 let posPollTimer = null
 let navEventTimer = null
 
-function getAmapKey() {
-  return amapKeyInput.value?.trim() || ''
-}
-
-function applyAmapKey() {
-  const key = amapKeyInput.value?.trim()
-  if (!key) {
-    ElMessage.warning('请输入有效的 API Key')
-    return
-  }
-  localStorage.setItem('amap_api_key', key)
+function initMap() {
+  if (!AMapLoader) return
   mapLoading.value = true
   if (map) { map.destroy(); map = null }
   if (trajectoryMap) { trajectoryMap.destroy(); trajectoryMap = null }
@@ -268,9 +239,14 @@ function applyAmapKey() {
   document.getElementById('map-container').innerHTML = ''
   document.getElementById('trajectory-map').innerHTML = ''
 
+  // 设置安全密钥
+  if (AMAP_SECURITY_KEY) {
+    window._AMapSecurityConfig = { securityJsCode: AMAP_SECURITY_KEY }
+  }
+
   AMapLoader.load({
-    key: key,
-    version: '2.0',
+    key: AMAP_KEY,
+    version: AMAP_VERSION,
     plugins: ['AMap.Scale'],
   }).then((AMap) => {
     map = new AMap.Map('map-container', {
@@ -299,26 +275,12 @@ function applyAmapKey() {
       viewMode: '2D',
     })
     mapLoading.value = false
-    ElMessage.success('地图加载成功')
     refreshTrajectory()
   }).catch((e) => {
     console.warn('高德地图加载失败:', e)
     mapLoading.value = false
-    ElMessage.error('地图加载失败，请检查 API Key 是否正确')
+    ElMessage.error('地图组件加载失败')
   })
-}
-
-function initMap() {
-  if (!AMapLoader) return
-  const amapKey = getAmapKey()
-  if (!amapKey) {
-    document.getElementById('map-container').innerHTML =
-      '<div style="display:flex;align-items:center;justify-content:center;height:100%;color:#909399;font-size:14px;background:#f5f7fa;border-radius:6px;">⚠️ 请在上方输入高德地图 API Key 并点击"应用"</div>'
-    document.getElementById('trajectory-map').innerHTML =
-      '<div style="display:flex;align-items:center;justify-content:center;height:100%;color:#909399;font-size:14px;background:#f5f7fa;border-radius:6px;">⚠️ 请在上方输入高德地图 API Key 并点击"应用"</div>'
-    return
-  }
-  applyAmapKey()
 }
 
 function updatePolyline(AMap) {

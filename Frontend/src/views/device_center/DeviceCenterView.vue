@@ -121,6 +121,8 @@
       direction="rtl"
       size="500px"
       destroy-on-close
+      @opened="handleDrawerOpened"
+      @closed="handleDrawerClosed"
     >
       <div v-loading="detailLoading">
         <el-descriptions :column="1" border v-if="currentDevice">
@@ -209,6 +211,7 @@ const deviceDetail = reactive({
 })
 const telemetryChartRef = ref(null)
 let telemetryChart = null
+let pendingHistoryRecords = []
 
 async function fetchDevices() {
   loading.value = true
@@ -275,12 +278,26 @@ async function viewDetail(row) {
 
     // 获取历史遥测用于图表
     const historyRes = await telemetryAPI.history(row.device_id, 50)
-    nextTick(() => renderTelemetryChart(historyRes.records || []))
+    pendingHistoryRecords = historyRes.records || []
   } catch (e) {
     console.error(e)
   } finally {
     detailLoading.value = false
   }
+}
+
+function handleDrawerOpened() {
+  if (pendingHistoryRecords.length > 0) {
+    renderTelemetryChart(pendingHistoryRecords)
+  }
+}
+
+function handleDrawerClosed() {
+  if (telemetryChart) {
+    telemetryChart.dispose()
+    telemetryChart = null
+  }
+  pendingHistoryRecords = []
 }
 
 function renderTelemetryChart(records) {
