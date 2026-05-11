@@ -17,6 +17,7 @@ T060 [US3]: 实时位置跟踪与自动驾驶状态监控
 import time
 import json
 from datetime import datetime, timedelta
+from math import cos
 
 from flask import Blueprint, request, jsonify
 from sqlalchemy import desc, func

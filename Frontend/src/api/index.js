@@ -82,9 +82,9 @@ export const vehicleAPI = {
 }
 
 export const auditAPI = {
-  logs: (eventType = null, limit = 50) =>
+  logs: (eventType = null, page = 1, pageSize = 20, userId = null) =>
     request.get('/audit/logs', {
-      params: { event_type: eventType, limit },
+      params: { event_type: eventType, page, page_size: pageSize, user_id: userId },
     }),
 }
 

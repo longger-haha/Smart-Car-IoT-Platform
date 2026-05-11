@@ -78,11 +78,13 @@ CREATE TABLE IF NOT EXISTS security_audit_logs (
     event_type        ENUM('replay','ddos','auth_fail','rbac_deny','sig_invalid') NOT NULL COMMENT '攻击类型',
     source_ip         VARCHAR(64)  NULL COMMENT '攻击来源IP',
     target_device_id  VARCHAR(64)  NULL COMMENT '被针对的设备ID',
+    user_id           INT          NULL COMMENT '关联用户ID',
     detail            TEXT         NULL COMMENT '详细描述',
     is_blocked        TINYINT(1)   NOT NULL DEFAULT 1 COMMENT '是否成功拦截',
     occurred_at       DATETIME     NOT NULL DEFAULT NOW() COMMENT '事件发生时间',
     PRIMARY KEY (id),
     INDEX idx_audit_occurred_at (occurred_at),
     INDEX idx_audit_event_type (event_type),
-    INDEX idx_audit_device (target_device_id)
+    INDEX idx_audit_device (target_device_id),
+    INDEX idx_audit_user_id (user_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='安全攻防日志表';

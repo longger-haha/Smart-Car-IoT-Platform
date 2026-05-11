@@ -9,9 +9,9 @@
         :default-active="activeMenu"
         :collapse="isCollapse"
         router
-        background-color="#1d1e2c"
-        text-color="#a0aec0"
-        active-text-color="#409eff"
+        background-color="#0d1117"
+        text-color="#8892a4"
+        active-text-color="#3b82f6"
         class="sidebar-menu"
       >
         <el-menu-item index="/dashboard">
@@ -26,7 +26,7 @@
           <el-icon><Position /></el-icon>
           <template #title>控制面板</template>
         </el-menu-item>
-        <el-menu-item index="/audit" v-if="isAdmin">
+        <el-menu-item index="/audit">
           <el-icon><Document /></el-icon>
           <template #title>审计日志</template>
         </el-menu-item>
@@ -69,7 +69,11 @@
       </el-header>
 
       <el-main class="main-content">
-        <router-view />
+        <router-view v-slot="{ Component }">
+          <Transition name="fade" mode="out-in">
+            <component :is="Component" />
+          </Transition>
+        </router-view>
       </el-main>
     </el-container>
   </el-container>
@@ -115,7 +119,7 @@ function handleCommand(command) {
 }
 
 .sidebar {
-  background-color: #1d1e2c;
+  background-color: var(--bg-sidebar);
   transition: width 0.3s;
   overflow: hidden;
 }
@@ -126,7 +130,7 @@ function handleCommand(command) {
   align-items: center;
   justify-content: center;
   gap: 10px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  border-bottom: 1px solid var(--border-color);
   padding: 0 16px;
 }
 
@@ -136,7 +140,7 @@ function handleCommand(command) {
 }
 
 .logo-text {
-  color: #e2e8f0;
+  color: var(--text-primary);
   font-size: 16px;
   font-weight: 700;
   white-space: nowrap;
@@ -149,14 +153,13 @@ function handleCommand(command) {
 }
 
 .header {
-  background: #fff;
-  border-bottom: 1px solid #e8ecf0;
+  background: var(--bg-header);
+  border-bottom: 1px solid var(--border-color);
   display: flex;
   align-items: center;
   justify-content: space-between;
   padding: 0 20px;
   height: 60px;
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.04);
 }
 
 .header-left {
@@ -167,12 +170,12 @@ function handleCommand(command) {
 
 .collapse-btn {
   cursor: pointer;
-  color: #606266;
+  color: var(--text-secondary);
   transition: color 0.2s;
 }
 
 .collapse-btn:hover {
-  color: #409eff;
+  color: var(--accent);
 }
 
 .header-right {
@@ -186,7 +189,7 @@ function handleCommand(command) {
   align-items: center;
   gap: 6px;
   cursor: pointer;
-  color: #303133;
+  color: var(--text-primary);
 }
 
 .username {
@@ -195,8 +198,8 @@ function handleCommand(command) {
 }
 
 .main-content {
-  background-color: #f5f6fa;
+  background-color: var(--bg-primary);
   overflow-y: auto;
-  padding: 20px;
+  padding: 24px;
 }
 </style>

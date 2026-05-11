@@ -10,7 +10,8 @@
         <el-card shadow="hover" class="stat-card card-device">
           <div class="stat-icon"><el-icon :size="32"><Monitor /></el-icon></div>
           <div class="stat-info">
-            <p class="stat-value">{{ stats.total_devices ?? '-' }}</p>
+            <p class="stat-value" v-if="!statsLoading">{{ stats.total_devices ?? '-' }}</p>
+            <el-skeleton v-else animated style="width:60px;height:26px;" />
             <p class="stat-label">设备总数</p>
           </div>
         </el-card>
@@ -19,7 +20,8 @@
         <el-card shadow="hover" class="stat-card card-online">
           <div class="stat-icon"><el-icon :size="32"><Connection /></el-icon></div>
           <div class="stat-info">
-            <p class="stat-value">{{ stats.online_devices ?? '-' }}</p>
+            <p class="stat-value" v-if="!statsLoading">{{ stats.online_devices ?? '-' }}</p>
+            <el-skeleton v-else animated style="width:60px;height:26px;" />
             <p class="stat-label">在线设备</p>
           </div>
         </el-card>
@@ -28,7 +30,8 @@
         <el-card shadow="hover" class="stat-card card-alert">
           <div class="stat-icon"><el-icon :size="32"><Warning /></el-icon></div>
           <div class="stat-info">
-            <p class="stat-value">{{ stats.critical_alerts ?? '-' }}</p>
+            <p class="stat-value" v-if="!statsLoading">{{ stats.critical_alerts ?? '-' }}</p>
+            <el-skeleton v-else animated style="width:60px;height:26px;" />
             <p class="stat-label">严重告警</p>
           </div>
         </el-card>
@@ -37,10 +40,17 @@
         <el-card shadow="hover" class="stat-card card-audit">
           <div class="stat-icon"><el-icon :size="32"><Document /></el-icon></div>
           <div class="stat-info">
-            <p class="stat-value">{{ stats.total_audit_logs ?? '-' }}</p>
+            <p class="stat-value" v-if="!statsLoading">{{ stats.total_audit_logs ?? '-' }}</p>
+            <el-skeleton v-else animated style="width:60px;height:26px;" />
             <p class="stat-label">审计日志</p>
           </div>
         </el-card>
+      </el-col>
+    </el-row>
+
+    <el-row :gutter="16" style="margin-top: 20px;">
+      <el-col :span="24">
+        <SensorCharts :telemetry-data="dashPositionData ?? {}" />
       </el-col>
     </el-row>
 
@@ -68,7 +78,7 @@
         <el-card shadow="never">
           <template #header>
             <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
-              <span>🚗 车辆实时轨迹</span>
+              <span>车辆实时轨迹</span>
               <el-select v-model="dashDeviceId" placeholder="选择设备" size="small" style="width:200px;" @change="onDashDeviceChange">
                 <el-option
                   v-for="d in deviceList"
@@ -85,8 +95,8 @@
             <el-tag size="small" type="success">在线设备: {{ stats.online_devices ?? 0 }}</el-tag>
             <el-tag size="small">总设备数: {{ stats.total_devices ?? 0 }}</el-tag>
             <el-tag size="small" type="warning">告警: {{ stats.critical_alerts ?? 0 }}</el-tag>
-            <span v-if="dashPositionData" style="font-size:13px;color:#666;margin-left:auto;">
-              📍 {{ dashPositionData.lat?.toFixed(5) || '--' }}, {{ dashPositionData.lng?.toFixed(5) || '--' }}
+            <span v-if="dashPositionData" class="dash-pos-bar">
+              {{ dashPositionData.lat?.toFixed(5) || '--' }}, {{ dashPositionData.lng?.toFixed(5) || '--' }}
               · PWM {{ dashPositionData.speed_pwm || '--' }}
               · {{ dashPositionData.temperature ? dashPositionData.temperature + '°C' : '' }}
             </span>
@@ -101,7 +111,7 @@
           <template #header>
             <span>最近告警事件</span>
           </template>
-          <el-table :data="stats.recent_alerts || []" stripe size="small" empty-text="暂无告警记录">
+          <el-table :data="paginatedAlerts" stripe size="small" empty-text="暂无告警记录">
             <el-table-column prop="id" label="ID" width="70" />
             <el-table-column prop="event_type" label="事件类型" width="120">
               <template #default="{ row }">
@@ -129,6 +139,16 @@
               </template>
             </el-table-column>
           </el-table>
+          <div class="table-footer" v-if="(stats.recent_alerts || []).length > alertPageSize">
+            <el-pagination
+              v-model:current-page="alertPage"
+              v-model:page-size="alertPageSize"
+              :total="(stats.recent_alerts || []).length"
+              :page-sizes="[10, 20]"
+              layout="total, prev, pager, next"
+              small
+            />
+          </div>
         </el-card>
       </el-col>
     </el-row>
@@ -136,14 +156,24 @@
 </template>
 
 <script setup>
-import { ref, reactive, onMounted, onUnmounted, nextTick, watch } from 'vue'
+import { ref, reactive, onMounted, onUnmounted, nextTick, watch, computed } from 'vue'
 import * as echarts from 'echarts'
 import { Monitor, Connection, Warning, Document } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { dashboardAPI, vehicleAPI, deviceAPI } from '@/api'
 import AMapLoader from '@amap/amap-jsapi-loader'
 import { AMAP_KEY, AMAP_VERSION, AMAP_SECURITY_KEY } from '@/config/amap'
+import { formatTime, eventTypeTagType, eventTypeLabel } from '@/utils/format'
+import SensorCharts from './SensorCharts.vue'
 
+const statsLoading = ref(true)
+const alertPage = ref(1)
+const alertPageSize = ref(10)
+const paginatedAlerts = computed(() => {
+  const all = stats.recent_alerts || []
+  const start = (alertPage.value - 1) * alertPageSize.value
+  return all.slice(start, start + alertPageSize.value)
+})
 const stats = reactive({
   total_devices: 0,
   online_devices: 0,
@@ -174,6 +204,7 @@ async function fetchStats() {
   try {
     const data = await dashboardAPI.stats()
     Object.assign(stats, data)
+    statsLoading.value = false
     nextTick(() => {
       renderPieChart()
       renderGaugeChart()
@@ -197,7 +228,7 @@ function renderPieChart() {
         radius: ['40%', '65%'],
         center: ['50%', '48%'],
         avoidLabelOverlap: true,
-        itemStyle: { borderRadius: 8, borderColor: '#fff', borderWidth: 2 },
+        itemStyle: { borderRadius: 4, borderColor: '#1a1f2e', borderWidth: 2 },
         label: { show: true, formatter: '{b}\n{c}台' },
         data: [
           { value: stats.online_devices || 0, name: '在线' },
@@ -240,9 +271,9 @@ function renderGaugeChart() {
           },
         },
         pointer: { icon: 'path://M12.8,0.7l12,40.1H0.7L12.8,0.7z', length: '70%', width: 5 },
-        axisTick: { splitNumber: 5, length: 8, lineStyle: { color: '#fff', width: 1 } },
-        splitLine: { length: 15, lineStyle: { color: '#fff', width: 2 } },
-        axisLabel: { distance: 20, fontSize: 11, color: '#999' },
+        axisTick: { splitNumber: 5, length: 8, lineStyle: { color: '#8892a4', width: 1 } },
+        splitLine: { length: 15, lineStyle: { color: '#8892a4', width: 2 } },
+        axisLabel: { distance: 20, fontSize: 11, color: '#8892a4' },
         title: { fontSize: 14, offsetCenter: [0, '30%'] },
         detail: {
           valueAnimation: true,
@@ -255,21 +286,6 @@ function renderGaugeChart() {
       },
     ],
   })
-}
-
-function eventTypeTagType(type) {
-  const map = { replay: 'danger', ddos: 'danger', auth_fail: 'warning', rbac_deny: 'warning', sig_invalid: 'info' }
-  return map[type] || 'info'
-}
-
-function eventTypeLabel(type) {
-  const map = { replay: '重放攻击', ddos: 'DDoS', auth_fail: '认证失败', rbac_deny: '权限拒绝', sig_invalid: '签名无效' }
-  return map[type] || type
-}
-
-function formatTime(timeStr) {
-  if (!timeStr) return '-'
-  return new Date(timeStr).toLocaleString('zh-CN')
 }
 
 async function loadDashDevices() {
@@ -290,7 +306,7 @@ async function fetchDashPosition() {
     const res = await vehicleAPI.getPosition(dashDeviceId.value)
     dashPositionData.value = res
     drawDashPositionMarker(res)
-  } catch (e) {}
+  } catch (e) { console.error('获取设备位置失败', e) }
 }
 
 function drawDashPositionMarker(pos) {
@@ -321,7 +337,7 @@ async function refreshDashTrajectory() {
         dashTrajectoryMap.setFitView([dashTrajectoryPolyline, dashPositionMarker].filter(Boolean))
       }
     }
-  } catch (e) {}
+  } catch (e) { console.error('刷新轨迹失败', e) }
 }
 
 function drawDashTrajectory(points) {
@@ -419,13 +435,13 @@ onUnmounted(() => {
 
 .page-header h2 {
   margin: 0;
-  font-size: 22px;
-  color: #303133;
+  font-size: 18px;
+  color: var(--text-primary);
 }
 
 .page-header .desc {
   font-size: 13px;
-  color: #909399;
+  color: var(--text-secondary);
   margin-top: 4px;
 }
 
@@ -441,37 +457,51 @@ onUnmounted(() => {
 }
 
 .stat-icon {
-  width: 56px;
-  height: 56px;
-  border-radius: 12px;
+  width: 48px;
+  height: 48px;
+  border-radius: 6px;
   display: flex;
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
   color: #fff;
+  font-size: 20px;
 }
 
-.card-device .stat-icon { background: linear-gradient(135deg, #667eea, #764ba2); }
-.card-online .stat-icon { background: linear-gradient(135deg, #11998e, #38ef7d); }
-.card-alert .stat-icon { background: linear-gradient(135deg, #eb3349, #f45c43); }
-.card-audit .stat-icon { background: linear-gradient(135deg, #4facfe, #00f2fe); }
+.card-device .stat-icon { background: var(--accent); }
+.card-online .stat-icon { background: var(--accent-success); }
+.card-alert .stat-icon { background: var(--accent-danger); }
+.card-audit .stat-icon { background: var(--accent-warning); }
 
 .stat-value {
-  font-size: 26px;
+  font-size: 24px;
   font-weight: 700;
-  color: #303133;
+  color: var(--text-primary);
   margin: 0;
   line-height: 1.3;
 }
 
 .stat-label {
   font-size: 13px;
-  color: #909399;
+  color: var(--text-secondary);
   margin: 2px 0 0;
 }
 
 .chart-container {
   width: 100%;
   height: 320px;
+}
+
+.dash-pos-bar {
+  font-size: 13px;
+  color: var(--text-secondary);
+  margin-left: auto;
+}
+
+.table-footer {
+  display: flex;
+  justify-content: flex-end;
+  padding-top: 12px;
+  margin-top: 8px;
 }
 </style>

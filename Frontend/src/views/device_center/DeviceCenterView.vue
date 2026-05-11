@@ -187,6 +187,7 @@ import * as echarts from 'echarts'
 import { Plus } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { deviceAPI, telemetryAPI } from '@/api'
+import { formatTime } from '@/utils/format'
 
 const devices = ref([])
 const loading = ref(false)
@@ -279,6 +280,10 @@ async function viewDetail(row) {
     // 获取历史遥测用于图表
     const historyRes = await telemetryAPI.history(row.device_id, 50)
     pendingHistoryRecords = historyRes.records || []
+    if (pendingHistoryRecords.length > 0) {
+      await nextTick()
+      renderTelemetryChart(pendingHistoryRecords)
+    }
   } catch (e) {
     console.error(e)
   } finally {
@@ -325,11 +330,6 @@ function renderTelemetryChart(records) {
   })
 }
 
-function formatTime(timeStr) {
-  if (!timeStr) return '-'
-  return new Date(timeStr).toLocaleString('zh-CN')
-}
-
 onMounted(() => {
   fetchDevices()
 })
@@ -345,27 +345,27 @@ onMounted(() => {
 
 .page-header h2 {
   margin: 0;
-  font-size: 22px;
-  color: #303133;
+  font-size: 18px;
+  color: var(--text-primary);
 }
 
 .page-header .desc {
   font-size: 13px;
-  color: #909399;
+  color: var(--text-secondary);
   margin-top: 4px;
 }
 
 .device-name {
   font-weight: 600;
-  color: #303133;
+  color: var(--text-primary);
 }
 
 .device-id {
-  background: #f5f7fa;
+  background: var(--bg-primary);
   padding: 2px 8px;
   border-radius: 4px;
   font-size: 13px;
-  color: #606266;
+  color: var(--text-secondary);
 }
 
 .register-tip {

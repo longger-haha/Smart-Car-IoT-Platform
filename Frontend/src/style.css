@@ -1,3 +1,19 @@
+/* SmartRover 全局样式 & 深色工业风主题变量 */
+
+:root {
+  --bg-primary: #0f1419;
+  --bg-secondary: #1a1f2e;
+  --bg-sidebar: #0d1117;
+  --bg-header: #161b25;
+  --border-color: #2a3040;
+  --text-primary: #e0e4ec;
+  --text-secondary: #8892a4;
+  --accent: #3b82f6;
+  --accent-success: #22c55e;
+  --accent-danger: #ef4444;
+  --accent-warning: #f59e0b;
+}
+
 * {
   margin: 0;
   padding: 0;
@@ -11,6 +27,8 @@ html, body {
     'Noto Sans', sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji';
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  background-color: var(--bg-primary);
+  color: var(--text-primary);
 }
 
 #app {
@@ -19,20 +37,75 @@ html, body {
   overflow: hidden;
 }
 
-::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+/* Element Plus 暗色覆盖 */
+.el-card {
+  background-color: var(--bg-secondary) !important;
+  border: 1px solid var(--border-color) !important;
+  border-radius: 4px !important;
+  box-shadow: none !important;
+  color: var(--text-primary);
 }
 
-::-webkit-scrollbar-track {
-  background: transparent;
+.el-card__header {
+  border-bottom: 1px solid var(--border-color) !important;
+  color: var(--text-primary);
 }
 
-::-webkit-scrollbar-thumb {
-  background: #c0c4cc;
-  border-radius: 3px;
+.el-table {
+  --el-table-bg-color: var(--bg-secondary);
+  --el-table-tr-bg-color: var(--bg-secondary);
+  --el-table-header-bg-color: var(--bg-header);
+  --el-table-row-hover-bg-color: rgba(255, 255, 255, 0.04);
+  --el-table-border-color: var(--border-color);
+  --el-table-text-color: var(--text-primary);
+  --el-table-header-text-color: var(--text-secondary);
 }
 
-::-webkit-scrollbar-thumb:hover {
-  background: #909399;
+.el-table th.el-table__cell {
+  background-color: var(--bg-header);
+}
+
+.el-table--striped .el-table__body tr.el-table__row--striped td.el-table__cell {
+  background-color: rgba(255, 255, 255, 0.02);
+}
+
+.el-pagination {
+  --el-pagination-bg-color: var(--bg-secondary);
+  --el-pagination-text-color: var(--text-secondary);
+  --el-pagination-button-color: var(--text-primary);
+}
+
+.el-dialog, .el-drawer {
+  --el-dialog-bg-color: var(--bg-secondary);
+  --el-dialog-border-color: var(--border-color);
+  --el-dialog-title-font-size: 16px;
+}
+
+.el-drawer {
+  --el-drawer-bg-color: var(--bg-secondary);
+}
+
+.el-breadcrumb__inner {
+  color: var(--text-secondary) !important;
+}
+
+.el-breadcrumb__inner.is-link:hover {
+  color: var(--accent) !important;
+}
+
+.el-descriptions {
+  --el-descriptions-item-bordered-label-background: var(--bg-header);
+}
+
+.el-divider {
+  --el-divider-text-color: var(--text-secondary);
+  border-color: var(--border-color);
+}
+
+.el-empty__description {
+  color: var(--text-secondary);
+}
+
+.el-alert {
+  border-radius: 4px;
 }

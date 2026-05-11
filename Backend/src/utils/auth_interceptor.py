@@ -31,7 +31,22 @@ from flask import request, jsonify, current_app
 from flask_jwt_extended import verify_jwt_in_request, get_jwt
 
 
-def _write_audit(event_type: str, detail: str = None, target_device_id: str = None):
+def _resolve_user_id():
+    """从当前 JWT 中解析 user_id，若无法解析则返回 None。"""
+    try:
+        from src.models.user import User
+        from src.extensions import db
+        claims = get_jwt()
+        username = claims.get('sub')
+        if username:
+            u = User.query.filter_by(username=username).first()
+            return u.id if u else None
+    except Exception:
+        pass
+    return None
+
+
+def _write_audit(event_type: str, detail: str = None, target_device_id: str = None, user_id: int = None):
     """安全地将一条审计日志写入数据库，失败时静默忽略（避免审计本身引发 500）。"""
     try:
         from src.extensions import db
@@ -43,6 +58,7 @@ def _write_audit(event_type: str, detail: str = None, target_device_id: str = No
             source_ip=source_ip,
             target_device_id=target_device_id,
             detail=detail,
+            user_id=user_id,
         )
         db.session.commit()
     except Exception as exc:
@@ -86,6 +102,7 @@ def jwt_required_with_rbac(roles: list):
                         f'User {username!r} with role {user_role!r} '
                         f'attempted to access endpoint requiring {roles}'
                     ),
+                    user_id=_resolve_user_id(),
                 )
                 return jsonify({
                     'error': '无权限：鉴权受阻',
@@ -194,7 +211,8 @@ def require_device_ownership(fn):
             _write_audit(
                 event_type='rbac_deny',
                 detail=f'Cross-tenant horizontal privilege escalation attempt! User {username!r} tried to access device {device_id!r} owned by user_id {target_device.user_id}.',
-                target_device_id=device_id
+                target_device_id=device_id,
+                user_id=current_user.id if current_user else None,
             )
             return jsonify({
                 'error': '无权限：该设备不属于您',

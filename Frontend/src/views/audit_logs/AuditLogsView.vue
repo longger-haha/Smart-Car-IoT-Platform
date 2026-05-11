@@ -11,7 +11,7 @@
       <div class="filter-bar">
         <div class="filters">
           <span class="filter-label">事件类型:</span>
-          <el-radio-group v-model="eventTypeFilter" size="small" @change="fetchLogs">
+          <el-radio-group v-model="eventTypeFilter" size="small" @change="onFilterChange">
             <el-radio-button label="">全部</el-radio-button>
             <el-radio-button label="replay">重放攻击</el-radio-button>
             <el-radio-button label="ddos">DDoS</el-radio-button>
@@ -19,18 +19,17 @@
             <el-radio-button label="rbac_deny">权限拒绝</el-radio-button>
             <el-radio-button label="sig_invalid">签名无效</el-radio-button>
           </el-radio-group>
+          <el-input
+            v-if="isAdmin"
+            v-model="userIdFilter"
+            placeholder="按用户ID筛选"
+            style="width: 140px; margin-left: 12px;"
+            size="small"
+            clearable
+            @change="onFilterChange"
+          />
         </div>
         <div class="actions">
-          <el-input
-            v-model="limit"
-            placeholder="条数"
-            style="width: 100px;"
-            type="number"
-            :min="10"
-            :max="500"
-            size="small"
-            @change="fetchLogs"
-          />
           <el-button type="primary" :loading="loading" icon="Refresh" size="small" @click="fetchLogs">刷新</el-button>
         </div>
       </div>
@@ -50,6 +49,12 @@
             <el-tag :type="eventTypeTagType(row.event_type)" effect="dark" size="small">
               {{ eventTypeLabel(row.event_type) }}
             </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column v-if="isAdmin" label="关联用户" width="130" align="center">
+          <template #default="{ row }">
+            <span v-if="row.username" class="user-name">{{ row.username }}</span>
+            <span v-else class="user-unknown">-</span>
           </template>
         </el-table-column>
         <el-table-column prop="source_ip" label="来源 IP" width="150" />
@@ -76,47 +81,63 @@
 
       <div class="table-footer">
         <span class="total-info">共 <strong>{{ total }}</strong> 条记录</span>
+        <el-pagination
+          v-if="total > 0"
+          v-model:current-page="currentPage"
+          v-model:page-size="pageSize"
+          :total="total"
+          :page-sizes="[10, 20, 50, 100]"
+          layout="total, sizes, prev, pager, next"
+          small
+          @size-change="onPageSizeChange"
+          @current-change="fetchLogs"
+        />
       </div>
     </el-card>
   </div>
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { auditAPI } from '@/api'
+import { formatTime, eventTypeTagType, eventTypeLabel } from '@/utils/format'
+
+const isAdmin = computed(() => localStorage.getItem('user_role') === 'admin')
 
 const logs = ref([])
 const loading = ref(false)
 const total = ref(0)
 const eventTypeFilter = ref('')
-const limit = ref(50)
+const userIdFilter = ref('')
+const currentPage = ref(1)
+const pageSize = ref(20)
 
 async function fetchLogs() {
   loading.value = true
   try {
-    const res = await auditAPI.logs(eventTypeFilter.value || null, Number(limit.value))
+    const res = await auditAPI.logs(
+      eventTypeFilter.value || null,
+      currentPage.value,
+      pageSize.value,
+      isAdmin.value && userIdFilter.value ? Number(userIdFilter.value) : null,
+    )
     logs.value = res.logs || []
     total.value = res.total || 0
   } catch (e) {
-    console.error(e)
+    console.error('获取审计日志失败', e)
   } finally {
     loading.value = false
   }
 }
 
-function eventTypeTagType(type) {
-  const map = { replay: 'danger', ddos: 'danger', auth_fail: 'warning', rbac_deny: 'warning', sig_invalid: 'info' }
-  return map[type] || 'info'
+function onFilterChange() {
+  currentPage.value = 1
+  fetchLogs()
 }
 
-function eventTypeLabel(type) {
-  const map = { replay: '重放攻击', ddos: 'DDoS', auth_fail: '认证失败', rbac_deny: '权限拒绝', sig_invalid: '签名无效' }
-  return map[type] || type
-}
-
-function formatTime(timeStr) {
-  if (!timeStr) return '-'
-  return new Date(timeStr).toLocaleString('zh-CN')
+function onPageSizeChange() {
+  currentPage.value = 1
+  fetchLogs()
 }
 
 onMounted(() => {
@@ -131,13 +152,13 @@ onMounted(() => {
 
 .page-header h2 {
   margin: 0;
-  font-size: 22px;
-  color: #303133;
+  font-size: 18px;
+  color: var(--text-primary);
 }
 
 .page-header .desc {
   font-size: 13px;
-  color: #909399;
+  color: var(--text-secondary);
   margin-top: 4px;
 }
 
@@ -159,7 +180,7 @@ onMounted(() => {
 
 .filter-label {
   font-size: 13px;
-  color: #606266;
+  color: var(--text-secondary);
   white-space: nowrap;
 }
 
@@ -174,12 +195,21 @@ onMounted(() => {
   justify-content: space-between;
   align-items: center;
   padding-top: 12px;
-  border-top: 1px solid #ebeef5;
+  border-top: 1px solid var(--border-color);
   margin-top: 8px;
 }
 
 .total-info {
   font-size: 13px;
-  color: #909399;
+  color: var(--text-secondary);
+}
+
+.user-name {
+  color: var(--accent);
+  font-weight: 500;
+}
+
+.user-unknown {
+  color: var(--text-secondary);
 }
 </style>

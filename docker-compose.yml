@@ -1,5 +1,3 @@
-version: "3.9"
-
 # ============================================================
 # SmartRover IoT 安全平台 — Docker Compose 编排
 # 服务: mysql | mosquitto | backend | frontend
