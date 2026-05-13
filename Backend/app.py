@@ -40,6 +40,26 @@ def create_app(config_class=Config):
     def health():
         return {'status': 'ok', 'service': 'SmartRover Backend'}
 
+    @app.errorhandler(429)
+    def ratelimit_handler(e):
+        from flask import request
+        from src.models.audit_log import SecurityAuditLog
+        from src.extensions import db
+        import logging
+
+        source_ip = request.remote_addr
+        try:
+            SecurityAuditLog.record(
+                event_type='ddos',
+                source_ip=source_ip,
+                detail=f'Rate limit exceeded: {e.description}'
+            )
+            db.session.commit()
+        except Exception as exc:
+            logging.warning(f"Failed to write ddos audit log: {exc}")
+
+        return {'error': 'Too Many Requests', 'detail': str(e.description)}, 429
+
     return app
 
 

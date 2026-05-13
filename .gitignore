@@ -22,3 +22,5 @@ Backend/.venv/
 .idea/
 *.DS_Store
 
+.claude/
+.superpowers/

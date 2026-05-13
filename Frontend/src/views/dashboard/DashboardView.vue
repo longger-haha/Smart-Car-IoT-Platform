@@ -220,16 +220,16 @@ function renderPieChart() {
 
   pieChart.setOption({
     tooltip: { trigger: 'item', formatter: '{b}: {c} ({d}%)' },
-    legend: { bottom: 0 },
-    color: ['#67c23a', '#f56c6c', '#e6a23c'],
+    legend: { bottom: 0, textStyle: { color: '#64748b' } },
+    color: ['#10b981', '#ef4444', '#f59e0b'],
     series: [
       {
         type: 'pie',
-        radius: ['40%', '65%'],
-        center: ['50%', '48%'],
+        radius: ['45%', '70%'],
+        center: ['50%', '45%'],
         avoidLabelOverlap: true,
-        itemStyle: { borderRadius: 4, borderColor: '#1a1f2e', borderWidth: 2 },
-        label: { show: true, formatter: '{b}\n{c}台' },
+        itemStyle: { borderRadius: 6, borderColor: '#ffffff', borderWidth: 3 },
+        label: { show: true, formatter: '{b}\n{c}台', color: '#0f172a' },
         data: [
           { value: stats.online_devices || 0, name: '在线' },
           { value: stats.offline_devices || 0, name: '离线' },
@@ -259,28 +259,28 @@ function renderGaugeChart() {
         max: 100,
         splitNumber: 10,
         radius: '85%',
-        center: ['50%', '60%'],
+        center: ['50%', '55%'],
         axisLine: {
           lineStyle: {
-            width: 16,
+            width: 14,
             color: [
-              [0.3, '#f56c6c'],
-              [0.7, '#e6a23c'],
-              [1, '#67c23a'],
+              [0.3, '#ef4444'],
+              [0.7, '#f59e0b'],
+              [1, '#10b981'],
             ],
           },
         },
         pointer: { icon: 'path://M12.8,0.7l12,40.1H0.7L12.8,0.7z', length: '70%', width: 5 },
-        axisTick: { splitNumber: 5, length: 8, lineStyle: { color: '#8892a4', width: 1 } },
-        splitLine: { length: 15, lineStyle: { color: '#8892a4', width: 2 } },
-        axisLabel: { distance: 20, fontSize: 11, color: '#8892a4' },
-        title: { fontSize: 14, offsetCenter: [0, '30%'] },
+        axisTick: { splitNumber: 5, length: 8, lineStyle: { color: '#cbd5e1', width: 1 } },
+        splitLine: { length: 15, lineStyle: { color: '#94a3b8', width: 2 } },
+        axisLabel: { distance: 20, fontSize: 11, color: '#64748b' },
+        title: { fontSize: 14, offsetCenter: [0, '35%'], color: '#64748b' },
         detail: {
           valueAnimation: true,
           formatter: '{value}%',
           fontSize: 28,
-          offsetCenter: [0, '0%'],
-          color: 'inherit',
+          offsetCenter: [0, '5%'],
+          color: '#0f172a',
         },
         data: [{ value: safeRate, name: '安全指数' }],
       },
@@ -430,61 +430,72 @@ onUnmounted(() => {
 }
 
 .page-header {
-  margin-bottom: 20px;
+  margin-bottom: 24px;
 }
 
 .page-header h2 {
   margin: 0;
-  font-size: 18px;
+  font-size: 20px;
+  font-weight: 700;
   color: var(--text-primary);
 }
 
 .page-header .desc {
-  font-size: 13px;
+  font-size: 14px;
   color: var(--text-secondary);
-  margin-top: 4px;
+  margin-top: 6px;
+  display: inline-block;
 }
 
 .stat-cards .stat-card {
   cursor: default;
+  border-radius: var(--radius-lg);
+  transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1), box-shadow 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.stat-cards .stat-card:hover {
+  transform: translateY(-4px);
+  box-shadow: var(--shadow-md) !important;
 }
 
 .stat-card :deep(.el-card__body) {
   display: flex;
   align-items: center;
-  gap: 16px;
-  padding: 20px;
+  gap: 18px;
+  padding: 24px;
 }
 
 .stat-icon {
-  width: 48px;
-  height: 48px;
-  border-radius: 6px;
+  width: 52px;
+  height: 52px;
+  border-radius: 12px;
   display: flex;
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
   color: #fff;
-  font-size: 20px;
+  font-size: 24px;
+  box-shadow: 0 4px 6px rgba(0,0,0,0.1);
 }
 
-.card-device .stat-icon { background: var(--accent); }
-.card-online .stat-icon { background: var(--accent-success); }
-.card-alert .stat-icon { background: var(--accent-danger); }
-.card-audit .stat-icon { background: var(--accent-warning); }
+.card-device .stat-icon { background: linear-gradient(135deg, #3b82f6, #2563eb); }
+.card-online .stat-icon { background: linear-gradient(135deg, #34d399, #10b981); }
+.card-alert .stat-icon { background: linear-gradient(135deg, #f87171, #ef4444); }
+.card-audit .stat-icon { background: linear-gradient(135deg, #fbbf24, #f59e0b); }
 
 .stat-value {
-  font-size: 24px;
+  font-size: 28px;
   font-weight: 700;
   color: var(--text-primary);
   margin: 0;
-  line-height: 1.3;
+  line-height: 1.2;
 }
 
 .stat-label {
-  font-size: 13px;
+  font-size: 14px;
   color: var(--text-secondary);
-  margin: 2px 0 0;
+  margin: 4px 0 0;
+  font-weight: 500;
 }
 
 .chart-container {
@@ -492,16 +503,26 @@ onUnmounted(() => {
   height: 320px;
 }
 
+#dash-trajectory-map {
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  border: 1px solid var(--border-color-light);
+}
+
 .dash-pos-bar {
   font-size: 13px;
   color: var(--text-secondary);
   margin-left: auto;
+  font-family: monospace;
+  background: var(--bg-primary);
+  padding: 4px 8px;
+  border-radius: 4px;
 }
 
 .table-footer {
   display: flex;
   justify-content: flex-end;
-  padding-top: 12px;
+  padding-top: 16px;
   margin-top: 8px;
 }
 </style>

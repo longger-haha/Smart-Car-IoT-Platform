@@ -21,8 +21,8 @@
           </el-radio-group>
           <el-input
             v-if="isAdmin"
-            v-model="userIdFilter"
-            placeholder="按用户ID筛选"
+            v-model="usernameFilter"
+            placeholder="按用户名筛选"
             style="width: 140px; margin-left: 12px;"
             size="small"
             clearable
@@ -42,8 +42,12 @@
         size="default"
         empty-text="暂无审计日志记录"
         style="width: 100%"
-      >
-        <el-table-column prop="id" label="ID" width="70" align="center" />
+      > <el-table-column v-if="isAdmin" label="关联用户" width="130" align="center">
+          <template #default="{ row }">
+            <span v-if="row.username" class="user-name">{{ row.username }}</span>
+            <span v-else class="user-unknown">-</span>
+          </template>
+        </el-table-column>
         <el-table-column label="事件类型" width="130" align="center">
           <template #default="{ row }">
             <el-tag :type="eventTypeTagType(row.event_type)" effect="dark" size="small">
@@ -51,12 +55,7 @@
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column v-if="isAdmin" label="关联用户" width="130" align="center">
-          <template #default="{ row }">
-            <span v-if="row.username" class="user-name">{{ row.username }}</span>
-            <span v-else class="user-unknown">-</span>
-          </template>
-        </el-table-column>
+       
         <el-table-column prop="source_ip" label="来源 IP" width="150" />
         <el-table-column prop="target_device_id" label="目标设备 ID" min-width="180">
           <template #default="{ row }">
@@ -108,7 +107,7 @@ const logs = ref([])
 const loading = ref(false)
 const total = ref(0)
 const eventTypeFilter = ref('')
-const userIdFilter = ref('')
+const usernameFilter = ref('')
 const currentPage = ref(1)
 const pageSize = ref(20)
 
@@ -119,7 +118,7 @@ async function fetchLogs() {
       eventTypeFilter.value || null,
       currentPage.value,
       pageSize.value,
-      isAdmin.value && userIdFilter.value ? Number(userIdFilter.value) : null,
+      isAdmin.value && usernameFilter.value ? usernameFilter.value : null,
     )
     logs.value = res.logs || []
     total.value = res.total || 0

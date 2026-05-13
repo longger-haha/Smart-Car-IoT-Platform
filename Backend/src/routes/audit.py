@@ -27,7 +27,7 @@ def get_logs():
     username  = claims.get('sub', 'unknown')
 
     event_type = request.args.get('event_type', '').strip().lower() or None
-    filter_user_id = request.args.get('user_id', type=int)
+    username_filter = request.args.get('username', '').strip()
 
     # 分页参数
     page_size = min(int(request.args.get('page_size', DEFAULT_PAGE_SIZE)), MAX_PAGE_SIZE)
@@ -64,8 +64,13 @@ def get_logs():
         query = query.filter(or_(*conditions))
     else:
         # 管理员可按用户过滤
-        if filter_user_id:
-            query = query.filter_by(user_id=filter_user_id)
+        if username_filter:
+            filter_user = User.query.filter_by(username=username_filter).first()
+            if filter_user:
+                query = query.filter_by(user_id=filter_user.id)
+            else:
+                # 用户名不存在时，查询结果为空
+                query = query.filter_by(user_id=-1)
 
     # 总数（分页前）
     total = query.count()
