@@ -12,7 +12,7 @@ from datetime import datetime
 from flask import Blueprint, request, jsonify
 from flask_jwt_extended import create_access_token
 
-from src.extensions import db
+from src.extensions import db, limiter
 from src.models.user import User
 from src.models.audit_log import SecurityAuditLog
 
@@ -20,6 +20,7 @@ auth_bp = Blueprint('auth', __name__)
 
 
 @auth_bp.post('/login')
+@limiter.limit("5 per minute")
 def login():
     """
     用户登录接口

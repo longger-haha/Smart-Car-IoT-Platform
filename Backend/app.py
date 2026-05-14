@@ -10,7 +10,6 @@ def create_app(config_class=Config):
 
     db.init_app(app)
     jwt.init_app(app)
-    limiter.init_app(app)
     CORS(app, resources={r"/api/*": {"origins": "*"}})
 
     import src.models.user
@@ -60,6 +59,7 @@ def create_app(config_class=Config):
 
         return {'error': 'Too Many Requests', 'detail': str(e.description)}, 429
 
+    limiter.init_app(app)
     return app
 
 
