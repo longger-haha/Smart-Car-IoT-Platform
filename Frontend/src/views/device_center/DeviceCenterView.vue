@@ -22,6 +22,11 @@
           <code class="device-id">{{ row.device_id }}</code>
         </template>
       </el-table-column>
+      <el-table-column v-if="isAdmin" prop="username" label="归属用户" width="120" align="center">
+        <template #default="{ row }">
+          <span>{{ row.username || '-' }}</span>
+        </template>
+      </el-table-column>
       <el-table-column label="状态" width="100" align="center">
         <template #default="{ row }">
           <el-tag :type="row.status === 'online' ? 'success' : 'info'" effect="dark" size="small">
@@ -182,12 +187,14 @@
 </template>
 
 <script setup>
-import { ref, reactive, onMounted, nextTick } from 'vue'
+import { ref, reactive, onMounted, nextTick, computed } from 'vue'
 import * as echarts from 'echarts'
 import { Plus } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { deviceAPI, telemetryAPI } from '@/api'
 import { formatTime } from '@/utils/format'
+
+const isAdmin = computed(() => localStorage.getItem('user_role') === 'admin')
 
 const devices = ref([])
 const loading = ref(false)

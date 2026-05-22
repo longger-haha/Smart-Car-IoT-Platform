@@ -54,6 +54,7 @@ def login():
             event_type='auth_fail',
             source_ip=request.remote_addr,
             detail=f'Login failed for username={username!r}',
+            user_id=user.id if user else None,
         )
         db.session.commit()
         return jsonify({'error': '用户名或密码错误'}), 401

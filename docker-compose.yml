@@ -83,6 +83,9 @@ services:
     build:
       context: ./Frontend
       dockerfile: Dockerfile
+      args:
+        VITE_AMAP_KEY: ${VITE_AMAP_KEY:-}
+        VITE_AMAP_SECURITY_KEY: ${VITE_AMAP_SECURITY_KEY:-}
     container_name: smartrover-frontend
     restart: unless-stopped
     environment:

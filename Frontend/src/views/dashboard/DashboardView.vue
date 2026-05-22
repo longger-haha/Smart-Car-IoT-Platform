@@ -7,44 +7,52 @@
 
     <el-row :gutter="16" class="stat-cards">
       <el-col :xs="12" :sm="12" :md="6">
-        <el-card shadow="hover" class="stat-card card-device">
-          <div class="stat-icon"><el-icon :size="32"><Monitor /></el-icon></div>
-          <div class="stat-info">
-            <p class="stat-value" v-if="!statsLoading">{{ stats.total_devices ?? '-' }}</p>
-            <el-skeleton v-else animated style="width:60px;height:26px;" />
-            <p class="stat-label">设备总数</p>
-          </div>
-        </el-card>
+        <router-link to="/devices" class="stat-card card-device clickable">
+          <el-card shadow="hover">
+            <div class="stat-icon"><el-icon :size="32"><Monitor /></el-icon></div>
+            <div class="stat-info">
+              <p class="stat-value" v-if="!statsLoading">{{ stats.total_devices ?? '-' }}</p>
+              <el-skeleton v-else animated style="width:60px;height:26px;" />
+              <p class="stat-label">设备总数</p>
+            </div>
+          </el-card>
+        </router-link>
       </el-col>
       <el-col :xs="12" :sm="12" :md="6">
-        <el-card shadow="hover" class="stat-card card-online">
-          <div class="stat-icon"><el-icon :size="32"><Connection /></el-icon></div>
-          <div class="stat-info">
-            <p class="stat-value" v-if="!statsLoading">{{ stats.online_devices ?? '-' }}</p>
-            <el-skeleton v-else animated style="width:60px;height:26px;" />
-            <p class="stat-label">在线设备</p>
-          </div>
-        </el-card>
+        <router-link to="/devices" class="stat-card card-online clickable">
+          <el-card shadow="hover">
+            <div class="stat-icon"><el-icon :size="32"><Connection /></el-icon></div>
+            <div class="stat-info">
+              <p class="stat-value" v-if="!statsLoading">{{ stats.online_devices ?? '-' }}</p>
+              <el-skeleton v-else animated style="width:60px;height:26px;" />
+              <p class="stat-label">在线设备</p>
+            </div>
+          </el-card>
+        </router-link>
       </el-col>
       <el-col :xs="12" :sm="12" :md="6">
-        <el-card shadow="hover" class="stat-card card-alert">
-          <div class="stat-icon"><el-icon :size="32"><Warning /></el-icon></div>
-          <div class="stat-info">
-            <p class="stat-value" v-if="!statsLoading">{{ stats.critical_alerts ?? '-' }}</p>
-            <el-skeleton v-else animated style="width:60px;height:26px;" />
-            <p class="stat-label">严重告警</p>
-          </div>
-        </el-card>
+        <router-link to="/control" class="stat-card card-alert clickable">
+          <el-card shadow="hover">
+            <div class="stat-icon"><el-icon :size="32"><Warning /></el-icon></div>
+            <div class="stat-info">
+              <p class="stat-value" v-if="!statsLoading">{{ stats.critical_alerts ?? '-' }}</p>
+              <el-skeleton v-else animated style="width:60px;height:26px;" />
+              <p class="stat-label">严重告警</p>
+            </div>
+          </el-card>
+        </router-link>
       </el-col>
       <el-col :xs="12" :sm="12" :md="6">
-        <el-card shadow="hover" class="stat-card card-audit">
-          <div class="stat-icon"><el-icon :size="32"><Document /></el-icon></div>
-          <div class="stat-info">
-            <p class="stat-value" v-if="!statsLoading">{{ stats.total_audit_logs ?? '-' }}</p>
-            <el-skeleton v-else animated style="width:60px;height:26px;" />
-            <p class="stat-label">审计日志</p>
-          </div>
-        </el-card>
+        <router-link to="/audit" class="stat-card card-audit clickable">
+          <el-card shadow="hover">
+            <div class="stat-icon"><el-icon :size="32"><Document /></el-icon></div>
+            <div class="stat-info">
+              <p class="stat-value" v-if="!statsLoading">{{ stats.total_audit_logs ?? '-' }}</p>
+              <el-skeleton v-else animated style="width:60px;height:26px;" />
+              <p class="stat-label">审计日志</p>
+            </div>
+          </el-card>
+        </router-link>
       </el-col>
     </el-row>
 
@@ -156,7 +164,8 @@
 </template>
 
 <script setup>
-import { ref, reactive, onMounted, onUnmounted, nextTick, watch, computed } from 'vue'
+import { ref, reactive, onMounted, nextTick, watch, computed } from 'vue'
+import { useRouter } from 'vue-router'
 import * as echarts from 'echarts'
 import { Monitor, Connection, Warning, Document } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
@@ -164,6 +173,12 @@ import { dashboardAPI, vehicleAPI, deviceAPI } from '@/api'
 import AMapLoader from '@amap/amap-jsapi-loader'
 import { AMAP_KEY, AMAP_VERSION, AMAP_SECURITY_KEY } from '@/config/amap'
 import { formatTime, eventTypeTagType, eventTypeLabel } from '@/utils/format'
+
+const router = useRouter()
+
+const isAdmin = computed(() => localStorage.getItem('user_role') === 'admin')
+
+const navigateTo = (path) => router.push(path)
 import SensorCharts from './SensorCharts.vue'
 
 const statsLoading = ref(true)
@@ -451,9 +466,25 @@ onUnmounted(() => {
   cursor: default;
   border-radius: var(--radius-lg);
   transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1), box-shadow 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+  display: block;
+  text-decoration: none;
 }
 
-.stat-cards .stat-card:hover {
+.stat-cards .stat-card.clickable {
+  cursor: pointer;
+}
+
+.stat-cards .stat-card :deep(.el-card) {
+  border-radius: var(--radius-lg);
+  transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1), box-shadow 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.stat-cards .stat-card:hover :deep(.el-card) {
+  transform: translateY(-4px);
+  box-shadow: var(--shadow-md) !important;
+}
+
+.stat-cards .stat-card.clickable:hover :deep(.el-card) {
   transform: translateY(-4px);
   box-shadow: var(--shadow-md) !important;
 }

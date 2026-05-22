@@ -1,6 +1,11 @@
 # ── Stage 1: 构建 ──────────────────────────────────────────
 FROM node:20-alpine AS builder
 
+ARG VITE_AMAP_KEY
+ARG VITE_AMAP_SECURITY_KEY
+ENV VITE_AMAP_KEY=$VITE_AMAP_KEY
+ENV VITE_AMAP_SECURITY_KEY=$VITE_AMAP_SECURITY_KEY
+
 WORKDIR /app
 
 COPY package*.json ./
