@@ -92,7 +92,7 @@ def _process_telemetry(device_id: str, raw_payload: bytes):
     from src.models.device import Device
     from src.models.telemetry import TelemetryPoint
     from src.models.audit_log import SecurityAuditLog
-    from src.utils.crypto_tool import aes_decrypt, hmac_verify
+    from src.utils.crypto_tool import aes_decrypt, hmac_verify, xor_decrypt, xor_verify_checksum
     from flask import current_app
     from datetime import datetime
 
@@ -100,21 +100,32 @@ def _process_telemetry(device_id: str, raw_payload: bytes):
     raw_ciphertext = raw_payload.decode('utf-8', errors='replace')
 
     try:
-        # ── 1. AES 解密 ──────────────────────────────────────────────
+        # ── 1. 解密 (AES 优先, 失败后尝试 XOR 轻量解密) ─────────────
         aes_key = current_app.config.get('AES_KEY', b'SmartRover2026!!')
+        xor_key = current_app.config.get('XOR_KEY', aes_key)  # 默认与 AES_KEY 相同
+        plaintext = None
+        encrypt_type = 'unknown'
+
         try:
             plaintext = aes_decrypt(aes_key, raw_ciphertext)
+            encrypt_type = 'aes'
         except ValueError:
-            # 解密失败：可能是非法设备发的乱数据
-            logger.warning(f'[MQTT] AES decrypt failed for device_id={device_id!r}')
-            SecurityAuditLog.record(
-                event_type='auth_fail',
-                target_device_id=device_id,
-                detail='AES decryption failed — possible unauthorized device or tampered data',
-                user_id=_get_device_owner_id(device_id),
-            )
-            db.session.commit()
-            return
+            # AES 解密失败, 尝试 XOR 解密 (UNO 设备)
+            try:
+                plaintext = xor_decrypt(xor_key, raw_ciphertext)
+                encrypt_type = 'xor'
+                logger.info(f'[MQTT] XOR decrypt OK for device_id={device_id!r}')
+            except ValueError:
+                # 两种解密都失败
+                logger.warning(f'[MQTT] Both AES and XOR decrypt failed for device_id={device_id!r}')
+                SecurityAuditLog.record(
+                    event_type='auth_fail',
+                    target_device_id=device_id,
+                    detail='Decryption failed (neither AES nor XOR) — possible unauthorized device',
+                    user_id=_get_device_owner_id(device_id),
+                )
+                db.session.commit()
+                return
 
         # ── 2. JSON 解析 ─────────────────────────────────────────────
         try:
@@ -145,23 +156,37 @@ def _process_telemetry(device_id: str, raw_payload: bytes):
             db.session.commit()
             return
 
-        # ── 4. HMAC 签名验证 ──────────────────────────────────────────
+        # ── 4. 签名验证 (AES 设备用 HMAC, XOR 设备用简易校验和) ────────
         signature = data.pop('signature', None)
         if signature:
-            # 将去掉 signature 的 payload 重新序列化来做校验
-            msg_body = json.dumps({k: v for k, v in data.items()}, sort_keys=True)
-            if not hmac_verify(device.device_secret, msg_body, signature):
-                logger.warning(f'[MQTT] HMAC verify failed for device {msg_device_id!r}')
-                SecurityAuditLog.record(
-                    event_type='sig_invalid',
-                    target_device_id=msg_device_id,
-                    detail='HMAC-SHA256 signature mismatch',
-                    user_id=device.user_id,
-                )
-                db.session.commit()
-                return
+            if encrypt_type == 'aes':
+                # AES 设备: HMAC-SHA256 签名验证
+                msg_body = json.dumps({k: v for k, v in data.items()}, sort_keys=True)
+                if not hmac_verify(device.device_secret, msg_body, signature):
+                    logger.warning(f'[MQTT] HMAC verify failed for device {msg_device_id!r}')
+                    SecurityAuditLog.record(
+                        event_type='sig_invalid',
+                        target_device_id=msg_device_id,
+                        detail='HMAC-SHA256 signature mismatch',
+                        user_id=device.user_id,
+                    )
+                    db.session.commit()
+                    return
+            else:
+                # XOR 设备 (UNO): 简易 XOR 校验和验证
+                msg_body = json.dumps({k: v for k, v in data.items()}, sort_keys=True)
+                if not xor_verify_checksum(device.device_secret, msg_body, signature):
+                    logger.warning(f'[MQTT] XOR checksum verify failed for device {msg_device_id!r}')
+                    SecurityAuditLog.record(
+                        event_type='sig_invalid',
+                        target_device_id=msg_device_id,
+                        detail='XOR checksum mismatch',
+                        user_id=device.user_id,
+                    )
+                    db.session.commit()
+                    return
         else:
-            logger.debug(f'[MQTT] No signature field, skipping HMAC check for {msg_device_id!r}')
+            logger.debug(f'[MQTT] No signature field, skipping check for {msg_device_id!r}')
 
         # ── 5. 写入遥测数据 ───────────────────────────────────────────
         point = TelemetryPoint(
@@ -171,7 +196,13 @@ def _process_telemetry(device_id: str, raw_payload: bytes):
             temperature    = data.get('temperature'),
             humidity       = data.get('humidity'),
             ultrasonic_cm  = data.get('ultrasonic_cm'),
+            ir_obstacle    = data.get('ir_obstacle'),
+            imu_heading    = data.get('imu_heading'),
+            imu_gyro_z     = data.get('imu_gyro_z'),
             speed_pwm      = data.get('speed_pwm'),
+            altitude       = data.get('altitude'),
+            speed_kmh      = data.get('speed_kmh'),
+            satellites     = data.get('satellites'),
             raw_ciphertext = raw_ciphertext,
             recorded_at    = datetime.now(),
         )
@@ -181,10 +212,15 @@ def _process_telemetry(device_id: str, raw_payload: bytes):
         device.touch()
         db.session.commit()
 
-        # ── 7. 碰撞预防：超声波距离 < 50cm 时下发紧急停车指令 ────────
+        # ── 7. 碰撞预防：超声波或红外检测到障碍 ──────────────────────
         SAFE_DISTANCE_CM = 50
         ultrasonic_val = data.get('ultrasonic_cm')
-        if ultrasonic_val is not None and ultrasonic_val < SAFE_DISTANCE_CM:
+        ir_val = data.get('ir_obstacle')
+        collision_detected = (
+            (ultrasonic_val is not None and ultrasonic_val < SAFE_DISTANCE_CM) or
+            (ir_val is True)
+        )
+        if collision_detected:
             logger.warning(
                 f'[MQTT] ⚠️ COLLISION WARNING: device={msg_device_id!r} '
                 f'ultrasonic={ultrasonic_val}cm < {SAFE_DISTANCE_CM}cm — '

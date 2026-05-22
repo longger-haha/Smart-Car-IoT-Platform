@@ -136,25 +136,37 @@
                 <span class="mini-value">{{ positionData?.speed_pwm ?? '--' }}</span>
               </div>
             </el-col>
-            <el-col :span="3">
+            <el-col :span="2">
               <div class="stat-mini">
                 <span class="mini-label">温度</span>
                 <span class="mini-value">{{ positionData?.temperature ? positionData.temperature + '°C' : '--' }}</span>
               </div>
             </el-col>
-            <el-col :span="3">
+            <el-col :span="2">
               <div class="stat-mini">
                 <span class="mini-label">湿度</span>
                 <span class="mini-value">{{ positionData?.humidity ? positionData.humidity + '%' : '--' }}</span>
               </div>
             </el-col>
-            <el-col :span="4">
+            <el-col :span="3">
               <div class="stat-mini">
                 <span class="mini-label">超声波(cm)</span>
-                <span class="mini-value">{{ positionData?.ultrasonic_cm ?? '--' }}</span>
+                <span class="mini-value" :style="{ color: positionData?.ultrasonic_cm < 50 ? '#f56c6c' : '' }">{{ positionData?.ultrasonic_cm ?? '--' }}</span>
               </div>
             </el-col>
-            <el-col :span="3">
+            <el-col :span="2">
+              <div class="stat-mini">
+                <span class="mini-label">红外</span>
+                <span class="mini-value" :style="{ color: positionData?.ir_obstacle ? '#f56c6c' : '#67c23a' }">{{ positionData?.ir_obstacle ? '障碍' : '安全' }}</span>
+              </div>
+            </el-col>
+            <el-col :span="2">
+              <div class="stat-mini">
+                <span class="mini-label">航向角</span>
+                <span class="mini-value">{{ positionData?.imu_heading != null ? positionData.imu_heading + '°' : '--' }}</span>
+              </div>
+            </el-col>
+            <el-col :span="2">
               <div class="stat-mini">
                 <span class="mini-label">卫星数</span>
                 <span class="mini-value">{{ positionData?.satellites ?? '--' }}</span>

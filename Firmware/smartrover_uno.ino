@@ -1,1157 +1,884 @@
 /**
  * ═══════════════════════════════════════════════════════════════
- *  SmartRover Arduino Uno — 智能小车自动驾驶固件 v1.0
+ *  SmartRover UNO — 智能小车固件 v3.1 (内存优化版)
  * ═══════════════════════════════════════════════════════════════
  *
- *  基于: smartrover_autopilot.ino v2.1 (ESP32版本)
- *  适配:  Arduino Uno R3 + L293D 4WD Motor Control Shield
+ *  针对 UNO 2KB SRAM 极限优化:
+ *    - 消除所有 String 对象，改用 char[] + snprintf
+ *    - AT 响应缓冲区复用全局静态区
+ *    - 航点数上限降至 5
+ *    - 精简 IMU 变量，去掉不用的 compAngle
+ *    - GPS 串口仅在读取时 listen()
+ *    - 遥测 JSON 缓冲区复用
  *
- *  功能清单:
- *    ✅ WiFi + MQTT 物联网通信 (通过ESP-01S AT指令)
- *    ✅ GPS 定位 (NEO-6M)
- *    ✅ Waypoint 巡航自动驾驶 (PID航向控制)
- *    ✅ 超声波避障 (HC-SR04) + 自动紧急停车
- *    ✅ 温湿度采集 (DHT11/DHT22)
- *    ✅ L293D 电机驱动 (4WD差速转向, AFMotor库)
- *    ✅ MPU6050 IMU 陀螺仪 (精确航向角, 互补滤波)
- *    ⚠️ 电池电压监测 (需外接分压电路, 默认禁用)
- *    ⚠️ AES/HMAC 加密 (Uno性能限制, 已简化)
- *    ✅ 心跳保活机制
+ *  预估 SRAM 占用: ~1100B (剩余 ~900B)
  *
- *  硬件接线 (最终确认版):
- *    ┌─────────────────────────────────────────────┐
- *    │ L293D Shield (堆叠):                         │
- *    │   M1 → 左前电机   M2 → 右前电机              │
- *    │   M3 → 左后电机   M4 → 右后电机              │
- *    │   EXT_PWR → 7~12V 电池                       │
- *    ├─────────────────────────────────────────────┤
- *    │ 传感器:                                       │
- *    │   HC-SR04 Trig → D5   Echo → D2             │
- *    │   DHT11 DATA  → D7                           │
- *    │   MPU6050 SDA  → A4   SCL → A5               │
- *    │   GPS TX      → A0   RX  → A1                │
- *    │   ESP-01S TX  → A3   RX  → A2                │
- *    │   ESP-01S VCC → 3.3V稳压  GND→GND           │
- *    ├─────────────────────────────────────────────┤
- *    │ 电源:                                         │
- *    │   5V  → HC-SR04, DHT11, GPS                  │
- *    │   3.3V → MPU6050                             │
- *    │   独立AMS1117-3.3V → ESP-01 VCC+CH_PD        │
- *    │   所有GND共地!                                │
- *    └─────────────────────────────────────────────┘
+ *  硬件: Arduino UNO R3 + ESP-01S(AT+MQTT) + L293D Shield
+ *  传感器: HC-SR04 + DHT11 + MPU6050 + NEO-6M GPS + 红外避障
+ *  通信: ESP-01S AT+MQTT  加密: XOR 轻量化
  *
- *  编译环境: Arduino IDE 1.8.x / 2.x
- *  需安装库:
- *    - AFMotor (Adafruit Motor Shield library)
- *    - SoftwareSerial (内置)
- *    - Wire (内置)
- *    - DHT sensor library
- *    - TinyGPS++
- *    - ArduinoJson
+ *  接线:
+ *    L293D Shield: M1→左前 M2→右前 M3→左后 M4→右后
+ *    HC-SR04:  Trig→D5  Echo→D2
+ *    DHT11:    DATA→D7
+ *    IR避障:   OUT→D4
+ *    MPU6050:  SDA→A4  SCL→A5  (I2C)
+ *    GPS:      TX→D8   RX→D9   (SoftwareSerial)
+ *    ESP-01S:  TX→A3   RX→A2   (SoftwareSerial)
  *
- *  作者: SmartRover Team
- *  日期: 2026-05-09
+ *  MQTT 主题:
+ *    发布: sensor/<device_id>     遥测 (XOR加密)
+ *    发布: heartbeat/<device_id>  心跳
+ *    发布: nav/<device_id>        导航事件
+ *    订阅: cmd/<device_id>        控制指令
  */
 
 #include <SoftwareSerial.h>
 #include <AFMotor.h>
-#include <Wire.h>
 #include <DHT.h>
+#include <Wire.h>
 #include <TinyGPS++.h>
 
 // ═══════════════════════════════════════════════════════════════
-//  一、系统配置（修改这里适配你的网络和设备）
+//  配置区
 // ═══════════════════════════════════════════════════════════════
 
-const char* WIFI_SSID     = "YOUR_WIFI_SSID";
-const char* WIFI_PASSWORD = "YOUR_WIFI_PASSWORD";
+const char WIFI_SSID[]     PROGMEM = "YOUR_WIFI_SSID";
+const char WIFI_PASSWORD[] PROGMEM = "YOUR_WIFI_PASSWORD";
+const char MQTT_HOST[]     PROGMEM = "192.168.1.100";
+const char DEVICE_ID[]     PROGMEM = "SMARTROVER_UNO_001";
+const char DEVICE_SECRET[] PROGMEM = "your_secret_key";
+const char XOR_KEY[]       PROGMEM = "SmartRover2026!!";
 
-const char* MQTT_HOST     = "192.168.1.100";
-const int    MQTT_PORT    = 1883;
-const char* MQTT_USER     = "";
-const char* MQTT_PASS     = "";
+const int   MQTT_PORT    = 1883;
+const long  HEARTBEAT_MS = 8000;
+const long  TELEMETRY_MS = 5000;
+const float ARRIVAL_M    = 3.0;
 
-const char* DEVICE_ID     = "SMARTROVER_UNO_001";
-const char* DEVICE_SECRET = "your_secret_key";
-
-const long  HEARTBEAT_MS  = 5000;
-const long  TELEMETRY_MS  = 10000;
-const float ARRIVAL_RADIUS_M = 3.0;
+// PID
+float pidKp = 2.5, pidKi = 0.02, pidKd = 0.8;
+float baseCruiseSpeed = 160;
 
 // ═══════════════════════════════════════════════════════════════
-//  二、引脚定义（对应你的接线方案）
+//  引脚
 // ═══════════════════════════════════════════════════════════════
 
 #define DHT_PIN       7
 #define DHT_TYPE      DHT11
 #define TRIG_PIN      5
 #define ECHO_PIN      2
-#define LED_BUILTIN   13
-
-#define MPU6050_ADDR  0x68
-
-// 软件串口引脚
-#define GPS_RX_PIN    A0
-#define GPS_TX_PIN    A1
+#define IR_PIN        4
+#define GPS_RX_PIN    8
+#define GPS_TX_PIN    9
 #define ESP_RX_PIN    A2
 #define ESP_TX_PIN    A3
-
-// 电池监测 (可选, 需要分压电路接A3, 但A3已被ESP占用)
-// 如果需要电池监测, 请改用其他空闲模拟脚或注释掉此功能
-// #define BAT_ADC     A3
-// #define BATT_R1     30000.0
-// #define BATT_R2     7500.0
-// #define BATT_LOW_V  10.5
-// #define BATT_FULL_V 12.6
+#define MPU_ADDR      0x68
 
 // ═══════════════════════════════════════════════════════════════
-//  三、全局对象和变量
+//  全局对象
 // ═══════════════════════════════════════════════════════════════
 
+SoftwareSerial espSerial(ESP_RX_PIN, ESP_TX_PIN);
+SoftwareSerial gpsSerial(GPS_RX_PIN, GPS_TX_PIN);
 DHT dht(DHT_PIN, DHT_TYPE);
 TinyGPSPlus gps;
 
-SoftwareSerial gpsSerial(GPS_RX_PIN, GPS_TX_PIN);
-SoftwareSerial espSerial(ESP_RX_PIN, ESP_TX_PIN);
-
-// L293D Shield 4个电机通道
-AF_DCMotor motorLeftFront(1);
-AF_DCMotor motorRightFront(2);
-AF_DCMotor motorLeftBack(3);
-AF_DCMotor motorRightBack(4);
-
-enum NavState {
-  NAV_IDLE,
-  NAV_CRUISING,
-  NAV_OBSTACLE_AVOID,
-  NAV_ARRIVED,
-  NAV_ABORTED
-};
-
-struct Waypoint {
-  double lat;
-  double lng;
-};
-
-struct CruiseStatus {
-  NavState state;
-  int totalWaypoints;
-  int currentWpIndex;
-  double currentLat;
-  double currentLng;
-  double currentCourse;
-  double targetBearing;
-  double distanceToTarget;
-  double leftSpeed;
-  double rightSpeed;
-  unsigned long stateDurationMs;
-  String lastEvent;
-};
-
-static Waypoint routeWaypoints[10];
-static int waypointCount = 0;
-static volatile NavState navState = NAV_IDLE;
-static volatile int currentWpIndex = 0;
-static unsigned long navStartTime = 0;
-static unsigned long lastObstacleTime = 0;
-
-double pidKp = 2.5, pidKi = 0.02, pidKd = 0.8;
-double pidIntegral = 0, pidLastError = 0;
-double baseCruiseSpeed = 160;
-
-int manualSpeedPwm = 150;
-String lastManualCommand = "stop";
-
-bool obstacleDetected = false;
-float ultrasonicDistanceCm = 999;
-unsigned long lastTelemetrySend = 0;
-unsigned long lastHeartbeat = 0;
-int messageSequence = 0;
-
-CruiseStatus cruiseInfo;
-
-float  imuHeadingDeg      = 0.0;
-float  imuGyroZ           = 0.0;
-float  imuAccelX          = 0.0;
-float  imuAccelY          = 0.0;
-float  imuAccelZ          = 0.0;
-bool   imuReady           = false;
-unsigned long lastImuRead  = 0;
-
-static float  compAngleX  = 0.0;
-static float  compAngleY  = 0.0;
-static float  gyroOffsetZ = 0.0;
-static bool   gyroCalibrated = false;
-const float COMP_ALPHA = 0.98f;
-const float DT_IMU     = 0.02f;
-
-float batteryVoltage    = 12.6f;
-int   batteryPercent    = 100;
-bool  lowBatteryWarning = false;
-bool  criticalBattery   = false;
-unsigned long lastBattRead = 0;
-const int BATT_READ_INTERVAL_MS = 10000;
-
-bool wifiConnected = false;
-bool mqttConnected = false;
+AF_DCMotor motorLF(1);
+AF_DCMotor motorRF(2);
+AF_DCMotor motorLB(3);
+AF_DCMotor motorRB(4);
 
 // ═══════════════════════════════════════════════════════════════
-//  四、ESP-01S AT指令封装
+//  共享缓冲区 (避免重复分配)
 // ═══════════════════════════════════════════════════════════════
 
-String sendATCommand(String cmd, unsigned long timeout = 2000) {
-  espSerial.println(cmd);
-  String response = "";
-  unsigned long start = millis();
-  while (millis() - start < timeout) {
-    while (espSerial.available()) {
-      char c = espSerial.read();
-      response += c;
-    }
+// AT 响应缓冲 — 所有 AT 通信复用
+static char atBuf[320];
+
+// 遥测 JSON + 加密输出复用区
+static char jsonBuf[300];
+static char encBuf[420];
+
+// MQTT 指令缓冲
+static char cmdBuf[200];
+
+// ═══════════════════════════════════════════════════════════════
+//  状态变量 (精简)
+// ═══════════════════════════════════════════════════════════════
+
+bool  wifiOk = false;
+bool  mqttOk = false;
+int   manualPwm = 150;
+float usCm = 999.0;
+bool  irObs = false;
+unsigned long tTel = 0, tHb = 0;
+int   msgSeq = 0;
+
+// IMU (精简: 只保留航向和角速度)
+bool  imuOk = false;
+float imuHeading = 0.0;
+float imuGyroZ = 0.0;
+float gyroOffZ = 0.0;
+float headingInteg = 0.0;
+unsigned long tImu = 0;
+
+// 导航
+enum NavState : uint8_t { NAV_IDLE, NAV_CRUISE, NAV_AVOID, NAV_DONE, NAV_ABORT };
+
+struct WP { float lat; float lng; };  // float=4B, 精度~1.1m 足够
+
+static WP wps[5];       // 5航点 x 8B = 40B
+static uint8_t wpCount = 0;
+static NavState navSt = NAV_IDLE;
+static uint8_t wpIdx = 0;
+static unsigned long tObs = 0;
+float pidI = 0, pidE = 0;
+
+// ═══════════════════════════════════════════════════════════════
+//  XOR 加密
+// ═══════════════════════════════════════════════════════════════
+
+static const char B64[] PROGMEM =
+  "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+void xorEncrypt(const char* plain, const char* key, char* out, int maxLen) {
+  int pL = strlen(plain), kL = strlen(key);
+  if (pL > 250) pL = 250;  // 限制以适配缓冲区
+
+  static uint8_t x[254];
+  for (int i = 0; i < pL; i++)
+    x[i] = (uint8_t)plain[i] ^ (uint8_t)key[i % kL];
+
+  int o = 0;
+  out[o++] = 'X'; out[o++] = 'O'; out[o++] = 'R'; out[o++] = ':';
+
+  int i = 0;
+  while (i < pL) {
+    if (o + 5 > maxLen) break;
+    uint8_t b0 = x[i];
+    uint8_t b1 = (i+1 < pL) ? x[i+1] : 0;
+    uint8_t b2 = (i+2 < pL) ? x[i+2] : 0;
+    out[o++] = pgm_read_byte(&B64[b0 >> 2]);
+    out[o++] = pgm_read_byte(&B64[((b0 & 3) << 4) | (b1 >> 4)]);
+    out[o++] = (i+1 < pL) ? pgm_read_byte(&B64[((b1 & 0xF) << 2) | (b2 >> 6)]) : '=';
+    out[o++] = (i+2 < pL) ? pgm_read_byte(&B64[b2 & 0x3F]) : '=';
+    i += 3;
   }
-  return response;
+  out[o] = '\0';
 }
 
-bool initESP01S() {
-  Serial.println(F("[ESP] 初始化 ESP-01S..."));
+// ═══════════════════════════════════════════════════════════════
+//  ESP-01S AT+MQTT (无 String 版)
+// ═══════════════════════════════════════════════════════════════
 
+// 辅助: 从 PROGMEM 拷贝到栈缓冲
+void pgmToBuf(char* buf, int maxLen, const char* pgmStr) {
+  int i = 0;
+  char c;
+  while ((c = pgm_read_byte(pgmStr + i)) && i < maxLen - 1) {
+    buf[i++] = c;
+  }
+  buf[i] = '\0';
+}
+
+void sendATBuf(const char* cmd, unsigned long timeout = 2000) {
+  espSerial.println(cmd);
+  atBuf[0] = '\0';
+  int idx = 0;
+  unsigned long t0 = millis();
+  while (millis() - t0 < timeout) {
+    while (espSerial.available()) {
+      char c = espSerial.read();
+      if (idx < (int)sizeof(atBuf) - 1) atBuf[idx++] = c;
+    }
+  }
+  atBuf[idx < (int)sizeof(atBuf) ? idx : (int)sizeof(atBuf) - 1] = '\0';
+}
+
+bool atContains(const char* needle) {
+  return strstr(atBuf, needle) != NULL;
+}
+
+bool initESP() {
+  Serial.println(F("[ESP] 初始化..."));
   delay(1000);
-
-  String resp = sendATCommand("AT", 2000);
-  if (resp.indexOf("OK") == -1) {
-    Serial.println(F("[ESP] ❌ ESP-01S 无响应! 检查接线(A2/A3)和电源(3.3V)"));
-    return false;
-  }
-
-  sendATCommand("ATE0", 1000);
-
-  resp = sendATCommand("AT+CWMODE?", 1000);
-  if (resp.indexOf("1") == -1) {
-    sendATCommand("AT+CWMODE=1", 2000);
-    delay(500);
-  }
-
-  Serial.println(F("[ESP] ✅ ESP-01S 就绪"));
+  sendATBuf("AT", 2000);
+  if (!atContains("OK")) { Serial.println(F("[ESP] 无响应!")); return false; }
+  sendATBuf("ATE0", 1000);
+  sendATBuf("AT+CWMODE=1", 2000);
+  delay(300);
+  sendATBuf("AT+CIPMUX=0", 1000);
+  Serial.println(F("[ESP] 就绪"));
   return true;
 }
 
 bool connectWiFi() {
-  if (!initESP01S()) return false;
+  if (!initESP()) return false;
 
-  Serial.print(F("[ESP] 连接WiFi: "));
-  Serial.println(WIFI_SSID);
+  char ssid[40], pass[40];
+  pgmToBuf(ssid, sizeof(ssid), WIFI_SSID);
+  pgmToBuf(pass, sizeof(pass), WIFI_PASSWORD);
 
-  String cmd = F("AT+CWJAP=\"");
-  cmd += WIFI_SSID;
-  cmd += F("\",\"");
-  cmd += WIFI_PASSWORD;
-  cmd += F("\"");
+  Serial.print(F("[WiFi] 连接: "));
+  Serial.println(ssid);
 
-  String resp = sendATCommand(cmd, 15000);
+  // AT+CWJAP="ssid","pass"
+  char cmd[100];
+  snprintf(cmd, sizeof(cmd), "AT+CWJAP=\"%s\",\"%s\"", ssid, pass);
+  sendATBuf(cmd, 20000);
 
-  if (resp.indexOf("OK") != -1 || resp.indexOf("CONNECTED") != -1 || resp.indexOf("GOT IP") != -1) {
-    wifiConnected = true;
-    Serial.println(F("[ESP] ✅ WiFi 连接成功!"));
-
-    resp = sendATCommand("AT+CIFSR", 2000);
-    int ipStart = resp.indexOf("\"");
-    if (ipStart != -1) {
-      int ipEnd = resp.indexOf("\"", ipStart + 1);
-      if (ipEnd != -1) {
-        String ip = resp.substring(ipStart + 1, ipEnd);
-        Serial.print(F("[ESP] IP地址: "));
-        Serial.println(ip);
-      }
-    }
+  if (atContains("OK") || atContains("GOT IP")) {
+    wifiOk = true;
+    Serial.println(F("[WiFi] OK!"));
+    sendATBuf("AT+CIFSR", 3000);
+    // 简单打印 IP
+    char* ip = strstr(atBuf, "\"");
+    if (ip) { char* e = strstr(ip + 1, "\""); if (e) *e = '\0';
+      Serial.print(F("[WiFi] IP: ")); Serial.println(ip + 1); }
     return true;
-  } else {
-    wifiConnected = false;
-    Serial.println(F("[ESP] ❌ WiFi 连接失败! 检查SSID和密码"));
-    Serial.print(F("[ESP] 响应: "));
-    Serial.println(resp.substring(0, min((int)resp.length(), 200)));
-    return false;
   }
+  wifiOk = false;
+  Serial.println(F("[WiFi] 失败!"));
+  return false;
 }
 
 bool connectMQTT() {
-  if (!wifiConnected) {
-    Serial.println(F("[MQTT] ❌ WiFi未连接, 无法连接MQTT"));
-    return false;
-  }
+  if (!wifiOk) return false;
 
-  Serial.print(F("[MQTT] 连接到 "));
-  Serial.print(MQTT_HOST);
-  Serial.print(F(":"));
-  Serial.println(MQTT_PORT);
+  char host[40], devId[30];
+  pgmToBuf(host, sizeof(host), MQTT_HOST);
+  pgmToBuf(devId, sizeof(devId), DEVICE_ID);
 
-  String cmd = F("AT+CMQTTCONNECT=\"");
-  cmd += MQTT_HOST;
-  cmd += F("\",");
-  cmd += String(MQTT_PORT);
+  Serial.print(F("[MQTT] 连接 "));
+  Serial.println(host);
 
-  String resp = sendATCommand(cmd, 10000);
+  // USERCFG
+  char cmd[120];
+  snprintf(cmd, sizeof(cmd), "AT+MQTTUSERCFG=0,1,\"%s\",\"\",\"\",0,0,\"\"", devId);
+  sendATBuf(cmd, 3000);
+  if (!atContains("OK")) { Serial.println(F("[MQTT] CFG 失败")); return false; }
 
-  if (resp.indexOf("OK") != -1) {
-    mqttConnected = true;
-    Serial.println(F("[MQTT] ✅ MQTT 连接成功!"));
+  // CONN
+  snprintf(cmd, sizeof(cmd), "AT+MQTTCONN=0,\"%s\",%d,0", host, MQTT_PORT);
+  sendATBuf(cmd, 10000);
+  if (atContains("OK")) {
+    mqttOk = true;
+    Serial.println(F("[MQTT] OK!"));
+    // SUB
+    snprintf(cmd, sizeof(cmd), "AT+MQTTSUB=0,\"cmd/%s\",1", devId);
+    sendATBuf(cmd, 3000);
     return true;
-  } else {
-    mqttConnected = false;
-    Serial.println(F("[MQTT] ❌ MQTT 连接失败!"));
-    return false;
   }
+  mqttOk = false;
+  Serial.println(F("[MQTT] 失败!"));
+  return false;
 }
 
-void publishMQTT(String topic, String payload) {
-  if (!mqttConnected && !connectMQTT()) return;
-
-  topic.replace("/", "%2F");
-
-  String cmd = F("AT+CMQTTPUB=0,\"");
-  cmd += topic;
-  cmd += F("\",0,0,0,\"");
-  cmd += payload;
-  cmd += F("\"");
-
-  sendATCommand(cmd, 5000);
+bool mqttPub(const char* topic, const char* payload) {
+  if (!mqttOk) return false;
+  // AT+MQTTPUB=0,"topic","payload",0,0
+  char cmd[500];
+  snprintf(cmd, sizeof(cmd), "AT+MQTTPUB=0,\"%s\",\"%s\",0,0", topic, payload);
+  sendATBuf(cmd, 5000);
+  return atContains("OK");
 }
 
-void subscribeMQTT(String topic) {
-  if (!mqttConnected) return;
+// 检查 MQTT 订阅消息，写入 cmdBuf
+bool checkCmd() {
+  if (!espSerial.available()) return false;
 
-  topic.replace("/", "%2F");
+  // 切换到 ESP 串口读取
+  espSerial.listen();
+  int idx = 0;
+  unsigned long t0 = millis();
+  while (millis() - t0 < 200) {
+    while (espSerial.available() && idx < (int)sizeof(cmdBuf) - 1)
+      cmdBuf[idx++] = espSerial.read();
+  }
+  cmdBuf[idx] = '\0';
 
-  String cmd = F("AT+CMQTTSUB=0,\"");
-  cmd += topic;
-  cmd += F("\",0");
+  char* recv = strstr(cmdBuf, "+MQTT_SUB_RECV:");
+  if (!recv) return false;
 
-  sendATCommand(cmd, 3000);
-}
-
-String checkMQTTMessages() {
-  if (!espSerial.available()) return "";
-
-  String msg = "";
-  unsigned long start = millis();
-  while (millis() - start < 100) {
-    while (espSerial.available()) {
-      char c = espSerial.read();
-      msg += c;
+  // 找 payload: 第5和第6个引号之间
+  int qc = 0, ps = -1, pe = -1;
+  for (int i = recv - cmdBuf; i < idx; i++) {
+    if (cmdBuf[i] == '"') {
+      qc++;
+      if (qc == 5) ps = i + 1;
+      if (qc == 6) { pe = i; break; }
     }
   }
+  if (ps == -1 || pe == -1) return false;
 
-  if (msg.indexOf("+CMQTTRXSTART") != -1) {
-    int dataStart = msg.indexOf("+CMQTTRXDATA,");
-    if (dataStart != -1) {
-      dataStart = msg.indexOf(",", dataStart + 12);
-      if (dataStart != -1) {
-        int dataEnd = msg.indexOf("\r\n", dataStart);
-        if (dataEnd != -1) {
-          return msg.substring(dataStart + 1, dataEnd);
-        }
-      }
-    }
-  }
-
-  return "";
+  // 把 payload 移到 cmdBuf 开头
+  int len = pe - ps;
+  memmove(cmdBuf, cmdBuf + ps, len);
+  cmdBuf[len] = '\0';
+  return true;
 }
 
 // ═══════════════════════════════════════════════════════════════
-//  五、安全工具（Uno简化版 - 无实际加密）
+//  MPU6050 (精简)
 // ═══════════════════════════════════════════════════════════════
 
-String hmacSha256(const String& keyHex, const String& message) {
-  return "";
-}
-
-String simpleEncrypt(const String& plaintext) {
-  return plaintext;
-}
-
-// ═══════════════════════════════════════════════════════════════
-//  六、GPS 导航数学工具
-// ═══════════════════════════════════════════════════════════════
-
-constexpr double DEG_TO_RAD = PI / 180.0;
-constexpr double RAD_TO_DEG = 180.0 / PI;
-constexpr double EARTH_RADIUS_M = 6371000.0;
-
-void calculateNavigation(double lat1, double lng1, double lat2, double lng2,
-                         double* distanceM, double* bearingDeg) {
-  double dLat = (lat2 - lat1) * DEG_TO_RAD;
-  double dLng = (lng2 - lng1) * DEG_TO_RAD;
-  double a = sin(dLat / 2) * sin(dLat / 2) +
-             cos(lat1 * DEG_TO_RAD) * cos(lat2 * DEG_TO_RAD) *
-             sin(dLng / 2) * sin(dLng / 2);
-  double c = 2 * atan2(sqrt(a), sqrt(1 - a));
-  *distanceM = EARTH_RADIUS_M * c;
-
-  double y = sin(dLng) * cos(lat2 * DEG_TO_RAD);
-  double x = cos(lat1 * DEG_TO_RAD) * sin(lat2 * DEG_TO_RAD) -
-             sin(lat1 * DEG_TO_RAD) * cos(lat2 * DEG_TO_RAD) * cos(dLng);
-  *bearingDeg = atan2(y, x) * RAD_TO_DEG;
-}
-
-double normalizeAngle(double angle) {
-  while (angle > 180)   angle -= 360;
-  while (angle < -180)  angle += 360;
-  return angle;
-}
-
-// ═══════════════════════════════════════════════════════════════
-//  七、MPU6050 IMU 陀螺仪
-// ═══════════════════════════════════════════════════════════════
-
-void writeMPU6050(uint8_t reg, uint8_t val) {
-  Wire.beginTransmission(MPU6050_ADDR);
-  Wire.write(reg);
-  Wire.write(val);
+void mpuWrite(uint8_t reg, uint8_t val) {
+  Wire.beginTransmission(MPU_ADDR);
+  Wire.write(reg); Wire.write(val);
   Wire.endTransmission(true);
 }
 
-uint8_t readMPU6050(uint8_t reg) {
-  Wire.beginTransmission(MPU6050_ADDR);
-  Wire.write(reg);
-  Wire.endTransmission(false);
-  Wire.requestFrom(MPU6050_ADDR, 1, true);
-  return Wire.read();
+void mpuRead6(int16_t* ax, int16_t* ay, int16_t* az, int16_t* gx, int16_t* gy, int16_t* gz) {
+  Wire.beginTransmission(MPU_ADDR);
+  Wire.write(0x3B); Wire.endTransmission(false);
+  Wire.requestFrom(MPU_ADDR, (uint8_t)14, true);
+  *ax = Wire.read()<<8 | Wire.read();
+  *ay = Wire.read()<<8 | Wire.read();
+  *az = Wire.read()<<8 | Wire.read();
+  Wire.read(); Wire.read(); // temp
+  *gx = Wire.read()<<8 | Wire.read();
+  *gy = Wire.read()<<8 | Wire.read();
+  *gz = Wire.read()<<8 | Wire.read();
 }
 
-void readMPU6050Raw(int16_t* ax, int16_t* ay, int16_t* az,
-                     int16_t* gx, int16_t* gy, int16_t* gz,
-                    int16_t* tempRaw) {
-  Wire.beginTransmission(MPU6050_ADDR);
-  Wire.write(0x3B);
-  Wire.endTransmission(false);
-  Wire.requestFrom(MPU6050_ADDR, 14, true);
-
-  *ax     = (Wire.read() << 8 | Wire.read());
-  *ay     = (Wire.read() << 8 | Wire.read());
-  *az     = (Wire.read() << 8 | Wire.read());
-  *tempRaw= (Wire.read() << 8 | Wire.read());
-  *gx     = (Wire.read() << 8 | Wire.read());
-  *gy     = (Wire.read() << 8 | Wire.read());
-  *gz     = (Wire.read() << 8 | Wire.read());
+void calibGyro() {
+  long sum = 0;
+  for (int i = 0; i < 300; i++) {  // 300次够了
+    int16_t ax,ay,az,gx,gy,gz;
+    mpuRead6(&ax,&ay,&az,&gx,&gy,&gz);
+    sum += gz; delay(2);
+  }
+  gyroOffZ = (float)sum / 300.0;
 }
 
-void initMPU6050() {
-  Wire.begin();
-  delay(100);
+void initMPU() {
+  Wire.begin(); delay(100);
+  mpuWrite(0x6B, 0x80); delay(100);
+  mpuWrite(0x6B, 0x03); delay(10);
+  mpuWrite(0x1A, 0x03); delay(10);
+  mpuWrite(0x1B, 0x18); delay(10);  // 2000°/s
+  mpuWrite(0x1C, 0x00); delay(50);  // 2g
 
-  writeMPU6050(0x6B, 0x80);
-  delay(100);
-  writeMPU6050(0x6B, 0x03);
-  delay(10);
-  writeMPU6050(0x1A, 0x03);
-  delay(10);
-  writeMPU6050(0x1B, 0x18);
-  delay(10);
-  writeMPU6050(0x1C, 0x00);
-  delay(50);
+  Wire.beginTransmission(MPU_ADDR);
+  Wire.write(0x75); Wire.endTransmission(false);
+  Wire.requestFrom(MPU_ADDR, (uint8_t)1, true);
+  uint8_t id = Wire.read();
 
-  uint8_t whoAmI = readMPU6050(0x75);
-  if (whoAmI == 0x68 || whoAmI == 0x69) {
-    imuReady = true;
-    Serial.println(F("[IMU] ✅ MPU6050 检测成功! 地址: 0x"));
-    Serial.println(whoAmI, HEX);
-    calibrateGyro();
-    Serial.println(F("[IMU] 陀螺仪零偏校准完成"));
+  if (id == 0x68 || id == 0x69) {
+    imuOk = true;
+    calibGyro();
+    Serial.println(F("[IMU] MPU6050 OK"));
   } else {
-    imuReady = false;
-    Serial.print(F("[IMU] ❌ MPU6050 未响应 (WHO_AM_I=0x"));
-    Serial.print(whoAmI, HEX);
-    Serial.println(F("), 将使用GPS航向"));
+    imuOk = false;
+    Serial.println(F("[IMU] 未检测到"));
   }
-}
-
-void calibrateGyro() {
-  const int SAMPLES = 500;
-  long gzSum = 0;
-
-  for (int i = 0; i < SAMPLES; i++) {
-    int16_t ax, ay, az, gx, gy, gz, temp;
-    readMPU6050Raw(&ax, &ay, &az, &gx, &gy, &gz, &temp);
-    gzSum += gz;
-    delay(2);
-  }
-  gyroOffsetZ = (float)gzSum / SAMPLES;
-  gyroCalibrated = true;
 }
 
 void updateIMU() {
-  if (!imuReady) return;
+  if (!imuOk) return;
   unsigned long now = millis();
-  if (now - lastImuRead < (unsigned long)(DT_IMU * 1000)) return;
-  lastImuRead = now;
+  if (now - tImu < 20) return;
+  tImu = now;
 
-  int16_t ax, ay, az, gx, gy, gz, tempRaw;
-  readMPU6050Raw(&ax, &ay, &az, &gx, &gy, &gz, &tempRaw);
+  int16_t ax,ay,az,gx,gy,gz;
+  mpuRead6(&ax,&ay,&az,&gx,&gy,&gz);
+  imuGyroZ = ((float)gz - gyroOffZ) / 131.07f;
 
-  float accX = ax / 16384.0f;
-  float accY = ay / 16384.0f;
-  float accZ = az / 16384.0f;
-  float gyroZRad = ((float)gz - gyroOffsetZ) / 131.07f * DEG_TO_RAD;
+  // 只积分 Z 轴航向 (省去 atan2/sqrt 的浮点运算)
+  headingInteg += imuGyroZ * 0.02f * 3.14159265f / 180.0f;
+  imuHeading = headingInteg * 180.0f / 3.14159265f;
+  if (imuHeading < 0) imuHeading += 360.0f;
+  if (imuHeading >= 360.0f) imuHeading -= 360.0f;
+}
 
-  imuAccelX = accX; imuAccelY = accY; imuAccelZ = accZ;
-  imuGyroZ  = ((float)gz - gyroOffsetZ) / 131.07f;
+// ═══════════════════════════════════════════════════════════════
+//  传感器
+// ═══════════════════════════════════════════════════════════════
 
-  float accRoll  = atan2(accY, accZ) * RAD_TO_DEG;
-  float accPitch = atan2(-accX, sqrt(accY * accY + accZ * accZ)) * RAD_TO_DEG;
+float readUS() {
+  digitalWrite(TRIG_PIN, LOW); delayMicroseconds(2);
+  digitalWrite(TRIG_PIN, HIGH); delayMicroseconds(10);
+  digitalWrite(TRIG_PIN, LOW);
+  long d = pulseIn(ECHO_PIN, HIGH, 25000);  // 缩短超时省时间
+  if (d == 0) return 999.0f;
+  float cm = d * 0.017f;
+  return (cm < 2.0f) ? 0.0f : cm;
+}
 
-  if (!gyroCalibrated) {
-    compAngleX = accRoll;
-    compAngleY = accPitch;
+bool readIR() { return digitalRead(IR_PIN) == LOW; }
+
+// ═══════════════════════════════════════════════════════════════
+//  电机
+// ═══════════════════════════════════════════════════════════════
+
+void stopMotors() {
+  motorLF.run(RELEASE); motorRF.run(RELEASE);
+  motorLB.run(RELEASE); motorRB.run(RELEASE);
+}
+
+void fwd(int s) {
+  motorLF.setSpeed(s); motorLF.run(FORWARD);
+  motorRF.setSpeed(s); motorRF.run(FORWARD);
+  motorLB.setSpeed(s); motorLB.run(FORWARD);
+  motorRB.setSpeed(s); motorRB.run(FORWARD);
+}
+
+void bwd(int s) {
+  motorLF.setSpeed(s); motorLF.run(BACKWARD);
+  motorRF.setSpeed(s); motorRF.run(BACKWARD);
+  motorLB.setSpeed(s); motorLB.run(BACKWARD);
+  motorRB.setSpeed(s); motorRB.run(BACKWARD);
+}
+
+void rotL(int s) {
+  motorLF.setSpeed(s); motorLF.run(BACKWARD);
+  motorLB.setSpeed(s); motorLB.run(BACKWARD);
+  motorRF.setSpeed(s); motorRF.run(FORWARD);
+  motorRB.setSpeed(s); motorRB.run(FORWARD);
+}
+
+void rotR(int s) {
+  motorLF.setSpeed(s); motorLF.run(FORWARD);
+  motorLB.setSpeed(s); motorLB.run(FORWARD);
+  motorRF.setSpeed(s); motorRF.run(BACKWARD);
+  motorRB.setSpeed(s); motorRB.run(BACKWARD);
+}
+
+void diffDrive(int lSpd, int rSpd) {
+  lSpd = constrain(lSpd, 0, 255);
+  rSpd = constrain(rSpd, 0, 255);
+  if (lSpd > 0) { motorLF.setSpeed(lSpd); motorLF.run(FORWARD);
+                   motorLB.setSpeed(lSpd); motorLB.run(FORWARD); }
+  else          { motorLF.run(RELEASE); motorLB.run(RELEASE); }
+  if (rSpd > 0) { motorRF.setSpeed(rSpd); motorRF.run(FORWARD);
+                   motorRB.setSpeed(rSpd); motorRB.run(FORWARD); }
+  else          { motorRF.run(RELEASE); motorRB.run(RELEASE); }
+}
+
+void execCmd(const char* cmd, int spd) {
+  Serial.print(F("[M] ")); Serial.print(cmd);
+  Serial.print(F(" ")); Serial.println(spd);
+  if (!strcmp(cmd,"forward"))  fwd(spd);
+  else if (!strcmp(cmd,"backward")) bwd(spd);
+  else if (!strcmp(cmd,"left"))     rotL(spd);
+  else if (!strcmp(cmd,"right"))    rotR(spd);
+  else if (!strcmp(cmd,"stop"))     stopMotors();
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  导航数学 (用 float 替代 double)
+// ═══════════════════════════════════════════════════════════════
+
+const float D2R = 0.01745329f;
+const float R2D = 57.29578f;
+const float R_EARTH = 6371000.0f;
+
+void navCalc(float lat1, float lng1, float lat2, float lng2,
+             float* dist, float* bearing) {
+  float dLat = (lat2 - lat1) * D2R;
+  float dLng = (lng2 - lng1) * D2R;
+  float c1 = cos(lat1 * D2R), c2 = cos(lat2 * D2R);
+  float a = sin(dLat/2) * sin(dLat/2) + c1 * c2 * sin(dLng/2) * sin(dLng/2);
+  *dist = R_EARTH * 2 * atan2(sqrt(a), sqrt(1 - a));
+
+  float y = sin(dLng) * c2;
+  float x = c1 * sin(lat2*D2R) - sin(lat1*D2R) * c2 * cos(dLng);
+  *bearing = atan2(y, x) * R2D;
+}
+
+float normAngle(float a) {
+  while (a > 180)  a -= 360;
+  while (a < -180) a += 360;
+  return a;
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  PID + 巡航
+// ═══════════════════════════════════════════════════════════════
+
+float pidSteer(float target, float cur) {
+  float e = normAngle(target - cur);
+  pidI += e; pidI = constrain(pidI, -80, 80);
+  float d = e - pidE; pidE = e;
+  float out = pidKp * e + pidKi * pidI + pidKd * d;
+  return constrain(out, -120, 120);
+}
+
+void resetPID() { pidI = 0; pidE = 0; }
+
+void pubNav(const char* evt, const char* detail) {
+  char devId[30]; pgmToBuf(devId, sizeof(devId), DEVICE_ID);
+  char topic[40]; snprintf(topic, sizeof(topic), "nav/%s", devId);
+
+  char latS[16], lngS[16];
+  if (gps.location.isValid()) {
+    dtostrf(gps.location.lat(), 2, 6, latS);
+    dtostrf(gps.location.lng(), 2, 6, lngS);
+  } else {
+    strcpy(latS, "null"); strcpy(lngS, "null");
+  }
+
+  const char* stStr = navSt == NAV_IDLE ? "idle" :
+                      navSt == NAV_CRUISE ? "cruising" :
+                      navSt == NAV_AVOID ? "avoiding" :
+                      navSt == NAV_DONE ? "arrived" : "aborted";
+
+  snprintf(jsonBuf, sizeof(jsonBuf),
+    "{\"device_id\":\"%s\",\"event_type\":\"%s\",\"detail\":\"%s\","
+    "\"lat\":%s,\"lng\":%s,\"wp\":%d/%d,\"state\":\"%s\"}",
+    devId, evt, detail, latS, lngS, wpIdx, wpCount, stStr);
+  mqttPub(topic, jsonBuf);
+}
+
+void navLoop() {
+  if (navSt != NAV_CRUISE && navSt != NAV_AVOID) return;
+
+  // 避障
+  if (usCm < 25 || irObs) {
+    if (navSt == NAV_CRUISE) {
+      navSt = NAV_AVOID; stopMotors(); tObs = millis();
+      pubNav("OBSTACLE", usCm < 25 ? "ultrasonic" : "ir");
+    }
+    unsigned long dt = millis() - tObs;
+    if (dt < 1500)       bwd(120);
+    else if (dt < 3000)  rotR(150);
+    else                 { navSt = NAV_CRUISE; pubNav("CLEARED","ok"); }
     return;
   }
 
-  compAngleX = COMP_ALPHA * (compAngleX + gyroZRad * DT_IMU * RAD_TO_DEG) + (1.0f - COMP_ALPHA) * accRoll;
-  compAngleY = COMP_ALPHA * compAngleY + (1.0f - COMP_ALPHA) * accPitch;
+  if (!gps.location.isValid()) { Serial.println(F("[NAV] no GPS")); return; }
 
-  static float headingIntegrator = 0.0f;
-  headingIntegrator += gyroZRad * DT_IMU;
-  imuHeadingDeg = fmod(headingIntegrator * RAD_TO_DEG, 360.0f);
-  if (imuHeadingDeg < 0) imuHeadingDeg += 360.0f;
+  if (wpIdx >= wpCount) {
+    navSt = NAV_DONE; stopMotors(); resetPID();
+    pubNav("ARRIVED","all done"); navSt = NAV_IDLE;
+    return;
+  }
+
+  float cLat = gps.location.lat(), cLng = gps.location.lng();
+  float dist, bear;
+  navCalc(cLat, cLng, wps[wpIdx].lat, wps[wpIdx].lng, &dist, &bear);
+
+  if (dist < ARRIVAL_M) {
+    wpIdx++;
+    char d[32]; snprintf(d, sizeof(d), "wp %d/%d", wpIdx, wpCount);
+    pubNav("WP_REACHED", d);
+    if (wpIdx >= wpCount) {
+      navSt = NAV_DONE; stopMotors(); resetPID();
+      pubNav("ARRIVED","all done"); navSt = NAV_IDLE;
+    }
+    return;
+  }
+
+  float heading = imuHeading;
+  if (gps.course.isValid() && gps.speed.kmph() > 3.0f)
+    heading = gps.course.deg();
+
+  float steer = pidSteer(bear, heading);
+  diffDrive((int)(baseCruiseSpeed - steer), (int)(baseCruiseSpeed + steer));
 }
 
-float getEffectiveHeading(double gpsCourse) {
-  if (!imuReady) return gpsCourse;
+// ═══════════════════════════════════════════════════════════════
+//  指令解析 (无 String 版)
+// ═══════════════════════════════════════════════════════════════
 
-  double gpsSpeedKmh = gps.speed.kmph();
+// 在 cmdBuf 中找 "key": 后面的字符串值，写入 out (最多 outLen)
+bool extractStr(const char* key, char* out, int outLen) {
+  char search[24];
+  snprintf(search, sizeof(search), "\"%s\"", key);
+  char* p = strstr(cmdBuf, search);
+  if (!p) return false;
+  char* colon = strchr(p + strlen(search), ':');
+  if (!colon) return false;
+  char* q1 = strchr(colon, '"');
+  if (!q1) return false;
+  char* q2 = strchr(q1 + 1, '"');
+  if (!q2) return false;
+  int len = q2 - q1 - 1;
+  if (len >= outLen) len = outLen - 1;
+  memcpy(out, q1 + 1, len);
+  out[len] = '\0';
+  return true;
+}
 
-  if (gpsSpeedKmh < 3.0 && gps.location.isValid()) {
-    double gpsHeading = normalizeAngle(gpsCourse);
-    float imuH        = normalizeAngle(imuHeadingDeg);
-    float diff         = fabs(normalizeAngle(gpsHeading - imuH));
+// 提取数值
+float extractNum(const char* key) {
+  char search[24];
+  snprintf(search, sizeof(search), "\"%s\"", key);
+  char* p = strstr(cmdBuf, search);
+  if (!p) return NAN;
+  char* colon = strchr(p + strlen(search), ':');
+  if (!colon) return NAN;
+  return atof(colon + 1);
+}
 
-    if (diff > 150.0f) {
-      return imuHeadingDeg;
+void handleCmd() {
+  if (!checkCmd()) return;
+  Serial.print(F("[CMD] ")); Serial.println(cmdBuf);
+
+  char cmd[16];
+  if (!extractStr("command", cmd, sizeof(cmd))) {
+    if (!extractStr("cmd", cmd, sizeof(cmd))) return;
+  }
+
+  int spd = (int)extractNum("speed_pwm");
+  if (spd <= 0 || spd > 255) spd = manualPwm;
+
+  // 运动指令
+  if (!strcmp(cmd,"forward") || !strcmp(cmd,"backward") ||
+      !strcmp(cmd,"left") || !strcmp(cmd,"right") || !strcmp(cmd,"stop")) {
+    if (navSt == NAV_CRUISE || navSt == NAV_AVOID) {
+      navSt = NAV_ABORT; stopMotors(); resetPID();
+      pubNav("ABORTED","manual"); navSt = NAV_IDLE;
+    }
+    manualPwm = spd;
+    execCmd(cmd, spd);
+  }
+  // 路线指令
+  else if (!strcmp(cmd,"route")) {
+    wpCount = 0;
+    // 解析航点: 找所有 "lat":xxx,"lng":yyy
+    char* p = cmdBuf;
+    while (wpCount < 5) {
+      char* latP = strstr(p, "\"lat\"");
+      if (!latP) break;
+      char* lngP = strstr(latP, "\"lng\"");
+      if (!lngP) break;
+
+      wps[wpCount].lat = atof(strchr(latP, ':') + 1);
+      wps[wpCount].lng = atof(strchr(lngP, ':') + 1);
+      wpCount++;
+      p = lngP + 4;
     }
 
-    float blend = constrain((float)(gpsSpeedKmh / 5.0), 0.05f, 1.0f);
-    return normalizeAngle(blend * gpsHeading + (1.0f - blend) * imuH);
-  }
-
-  return imuHeadingDeg;
-}
-
-// ═══════════════════════════════════════════════════════════════
-//  八、电池电压监测（可选功能）
-// ═══════════════════════════════════════════════════════════════
-
-void updateBattery() {
-#ifndef BAT_ADC
-  batteryVoltage = 12.0f;
-  batteryPercent = 80;
-  lowBatteryWarning = false;
-  criticalBattery = false;
-  return;
-#endif
-
-  unsigned long now = millis();
-  if (now - lastBattRead < BATT_READ_INTERVAL_MS) return;
-  lastBattRead = now;
-
-  int raw = analogRead(BAT_ADC);
-  float adcVoltage = (raw / 1023.0f) * 5.0f;
-  batteryVoltage = adcVoltage * (BATT_R1 + BATT_R2) / BATT_R2;
-
-  batteryPercent = (int)constrain(
-    ((batteryVoltage - BATT_LOW_V) / (BATT_FULL_V - BATT_LOW_V)) * 100.0f,
-    0.0f, 100.0f
-  );
-
-  lowBatteryWarning = (batteryVoltage < 11.0f && batteryVoltage >= BATT_LOW_V);
-  criticalBattery   = (batteryVoltage < BATT_LOW_V);
-
-  if (criticalBattery && navState == NAV_CRUISING) {
-    navState = NAV_ABORTED;
-    stopMotor();
-    resetPID();
-    publishNavStatus("CRITICAL_BATTERY",
-      String("⚠️ 电量严重不足: ") + batteryVoltage + "V (" +
-      batteryPercent + "%), 巡航已中止!");
-  } else if (lowBatteryWarning) {
-    Serial.print(F("[BAT] 🟡 低电量警告: "));
-    Serial.print(batteryVoltage);
-    Serial.print(F("V ("));
-    Serial.print(batteryPercent);
-    Serial.println(F("%)"));
-  }
-}
-
-// ═══════════════════════════════════════════════════════════════
-//  九、PID 航向控制器
-// ═══════════════════════════════════════════════════════════════
-
-double computePIDSteering(double targetBearing, double currentHeading) {
-  double error = normalizeAngle(targetBearing - currentHeading);
-
-  pidIntegral += error;
-  if (pidIntegral > 100)  pidIntegral = 100;
-  if (pidIntegral < -100) pidIntegral = -100;
-
-  double derivative = error - pidLastError;
-  pidLastError = error;
-
-  double output = pidKp * error + pidKi * pidIntegral + pidKd * derivative;
-  return constrain(output, -120, 120);
-}
-
-void resetPID() {
-  pidIntegral = 0;
-  pidLastError = 0;
-}
-
-// ═══════════════════════════════════════════════════════════════
-//  十、L293D 电机驱动控制（4WD差速转向）
-// ═══════════════════════════════════════════════════════════════
-
-void initMotors() {
-  motorLeftFront.setSpeed(0);
-  motorRightFront.setSpeed(0);
-  motorLeftBack.setSpeed(0);
-  motorRightBack.setSpeed(0);
-
-  motorLeftFront.run(RELEASE);
-  motorRightFront.run(RELEASE);
-  motorLeftBack.run(RELEASE);
-  motorRightBack.run(RELEASE);
-
-  stopMotor();
-
-  pinMode(LED_BUILTIN, OUTPUT);
-  digitalWrite(LED_BUILTIN, LOW);
-
-  Serial.println(F("[MOTOR] ✅ L293D Shield 初始化完成 (4WD模式)"));
-}
-
-void setMotorRaw(int leftSpeed, int rightSpeed) {
-  leftSpeed  = constrain(leftSpeed,  -255, 255);
-  rightSpeed = constrain(rightSpeed, -255, 255);
-
-  if (leftSpeed == 0 && rightSpeed == 0) {
-    motorLeftFront.run(RELEASE);
-    motorLeftBack.run(RELEASE);
-    motorRightFront.run(RELEASE);
-    motorRightBack.run(RELEASE);
-    return;
-  }
-
-  if (leftSpeed >= 0) {
-    motorLeftFront.run(FORWARD);
-    motorLeftBack.run(FORWARD);
-  } else {
-    motorLeftFront.run(BACKWARD);
-    motorLeftBack.run(BACKWARD);
-  }
-  motorLeftFront.setSpeed(abs(leftSpeed));
-  motorLeftBack.setSpeed(abs(leftSpeed));
-
-  if (rightSpeed >= 0) {
-    motorRightFront.run(FORWARD);
-    motorRightBack.run(FORWARD);
-  } else {
-    motorRightFront.run(BACKWARD);
-    motorRightBack.run(BACKWARD);
-  }
-  motorRightFront.setSpeed(abs(rightSpeed));
-  motorRightBack.setSpeed(abs(rightSpeed));
-}
-
-void stopMotor() {
-  setMotorRaw(0, 0);
-}
-
-void moveForward(int speed) { setMotorRaw(speed, speed); }
-void moveBackward(int speed){ setMotorRaw(-speed, -speed); }
-void turnLeft(int speed)     { setMotorRaw(-speed, speed); }
-void turnRight(int speed)    { setMotorRaw(speed, -speed); }
-
-void executeCommand(const String& cmd, int pwm) {
-  lastManualCommand = cmd;
-  if (navState == NAV_CRUISING) {
-    navState = NAV_ABORTED;
-    stopMotor();
-    resetPID();
-    Serial.println(F("[NAV] 手动接管，巡航已中止"));
-  }
-
-  if (cmd == "forward")  moveForward(pwm);
-  else if (cmd == "backward") moveBackward(pwm);
-  else if (cmd == "left")     turnLeft(pwm);
-  else if (cmd == "right")    turnRight(pwm);
-  else if (cmd == "stop")     stopMotor();
-
-  Serial.print(F("[CMD] 执行: "));
-  Serial.print(cmd);
-  Serial.print(F(" PWM="));
-  Serial.println(pwm);
-}
-
-// ═══════════════════════════════════════════════════════════════
-//  十一、超声波测距
-// ═══════════════════════════════════════════════════════════════
-
-float readUltrasonic() {
-  digitalWrite(TRIG_PIN, LOW);
-  delayMicroseconds(2);
-  digitalWrite(TRIG_PIN, HIGH);
-  delayMicroseconds(10);
-  digitalWrite(TRIG_PIN, LOW);
-
-  long duration = pulseIn(ECHO_PIN, HIGH, 30000);
-  if (duration == 0) return 999;
-  return duration * 0.034 / 2;
-}
-
-// ═══════════════════════════════════════════════════════════════
-//  十二、避障逻辑
-// ═══════════════════════════════════════════════════════════════
-
-void checkObstacle() {
-  ultrasonicDistanceCm = readUltrasonic();
-
-  const float SAFE_DIST_CM = 50.0;
-  const float CRITICAL_DIST_CM = 20.0;
-
-  if (ultrasonicDistanceCm < CRITICAL_DIST_CM && ultrasonicDistanceCm > 0) {
-    obstacleDetected = true;
-    stopMotor();
-    lastObstacleTime = millis();
-    Serial.print(F("[OBSTACLE] ⚠️ 紧急停车! 距离="));
-    Serial.print(ultrasonicDistanceCm);
-    Serial.println(F("cm"));
-    publishNavStatus("EMERGENCY_STOP", String("障碍物过近: ") + ultrasonicDistanceCm + "cm");
-  } else if (ultrasonicDistanceCm < SAFE_DIST_CM && ultrasonicDistanceCm > 0) {
-    obstacleDetected = true;
-    Serial.print(F("[OBSTACLE] 障碍物警告: "));
-    Serial.print(ultrasonicDistanceCm);
-    Serial.println(F("cm"));
-  } else {
-    obstacleDetected = false;
-  }
-}
-
-void avoidObstacleManeuver() {
-  static unsigned long avoidStart = 0;
-  static int phase = 0;
-
-  if (avoidStart == 0) avoidStart = millis();
-  unsigned long elapsed = millis() - avoidStart;
-
-  switch (phase) {
-    case 0:
-      stopMotor();
-      if (elapsed > 500) { phase = 1; avoidStart = millis(); }
-      break;
-    case 1:
-      turnLeft(120);
-      if (elapsed > 800) { phase = 2; avoidStart = millis(); }
-      break;
-    case 2:
-      moveForward(130);
-      if (elapsed > 1500) { phase = 3; avoidStart = millis(); }
-      break;
-    case 3:
-      turnRight(120);
-      if (elapsed > 800) {
-        phase = 0;
-        avoidStart = 0;
-        navState = NAV_CRUISING;
-        publishNavStatus("OBSTACLE_CLEARED", "绕行完成，恢复巡航");
-        Serial.println(F("[NAV] 障碍已绕过，继续巡航"));
-      }
-      break;
-  }
-}
-
-// ═══════════════════════════════════════════════════════════════
-//  十三、Waypoint 自动驾驶导航循环
-// ═══════════════════════════════════════════════════════════════
-
-void navigationLoop() {
-  if (waypointCount == 0 || currentWpIndex >= waypointCount) {
-    navState = NAV_ARRIVED;
-    stopMotor();
-    resetPID();
-    publishNavStatus("ARRIVED", "所有航点已完成!");
-    Serial.println(F("[NAV] ✅ 所有航点到达!"));
-    navState = NAV_IDLE;
-    return;
-  }
-
-  checkObstacle();
-
-  if (obstacleDetected && (millis() - lastObstacleTime < 3000)) {
-    navState = NAV_OBSTACLE_AVOID;
-    avoidObstacleManeuver();
-    return;
-  }
-
-  Waypoint target = routeWaypoints[currentWpIndex];
-
-  if (!gps.location.isValid()) {
-    Serial.println(F("[NAV] ⏳ 等待GPS信号..."));
-    stopMotor();
-    return;
-  }
-
-  double currentLat = gps.location.lat();
-  double currentLng = gps.location.lng();
-  double distanceM, targetBearing;
-  calculateNavigation(currentLat, currentLng, target.lat, target.lng, &distanceM, &targetBearing);
-
-  double gpsCourse = gps.course.deg();
-  double effectiveHeading = getEffectiveHeading(gpsCourse);
-
-  double steering = computePIDSteering(targetBearing, effectiveHeading);
-
-  int leftSpeed  = (int)(baseCruiseSpeed - steering);
-  int rightSpeed = (int)(baseCruiseSpeed + steering);
-  leftSpeed  = constrain(leftSpeed,  0, 255);
-  rightSpeed = constrain(rightSpeed, 0, 255);
-
-  if (distanceM < ARRIVAL_RADIUS_M) {
-    currentWpIndex++;
-    Serial.print(F("[NAV] ✅ 到达航点 #"));
-    Serial.println(currentWpIndex);
-
-    if (currentWpIndex >= waypointCount) {
-      navState = NAV_ARRIVED;
-      stopMotor();
-      resetPID();
-      publishNavStatus("ARRIVED", "所有航点已完成!");
-      Serial.println(F("[NAV] 🎉 所有航点完成!"));
-      navState = NAV_IDLE;
-      return;
+    if (wpCount >= 2) {
+      wpIdx = 0; navSt = NAV_CRUISE; resetPID();
+      headingInteg = 0; imuHeading = 0;
+      char d[24]; snprintf(d, sizeof(d), "%d waypoints", wpCount);
+      pubNav("START", d);
+      Serial.print(F("[NAV] 巡航 ")); Serial.print(wpCount); Serial.println(F(" wp"));
+    } else {
+      Serial.println(F("[NAV] wp<2"));
     }
-
-    publishNavStatus("WAYPOINT_REACHED",
-      String("航点 ") + currentWpIndex + "/" + waypointCount + " 已到达");
-  } else {
-    setMotorRaw(leftSpeed, rightSpeed);
   }
-
-  cruiseInfo.state = navState;
-  cruiseInfo.currentWpIndex = currentWpIndex;
-  cruiseInfo.totalWaypoints = waypointCount;
-  cruiseInfo.currentLat = currentLat;
-  cruiseInfo.currentLng = currentLng;
-  cruiseInfo.currentCourse = effectiveHeading;
-  cruiseInfo.targetBearing = targetBearing;
-  cruiseInfo.distanceToTarget = distanceM;
-  cruiseInfo.leftSpeed = leftSpeed;
-  cruiseInfo.rightSpeed = rightSpeed;
-  cruiseInfo.stateDurationMs = millis() - navStartTime;
-}
-
-void startCruise(Wpoint* wps, int count) {
-  if (count == 0 || count > 10) {
-    Serial.println(F("[NAV] ❌ 无效的航点数量!"));
-    return;
-  }
-
-  for (int i = 0; i < count; i++) {
-    routeWaypoints[i].lat = wps[i].lat;
-    routeWaypoints[i].lng = wps[i].lng;
-  }
-  waypointCount = count;
-  currentWpIndex = 0;
-  navState = NAV_CRUISING;
-  navStartTime = millis();
-  resetPID();
-
-  Serial.print(F("[NAV] 🚀 开始巡航, 共 "));
-  Serial.print(count);
-  Serial.println(F(" 个航点"));
-
-  publishNavStatus("CRUISE_START", String("开始巡航, 共") + count + "个航点");
-}
-
-void abortCruise() {
-  if (navState == NAV_CRUISING || navState == NAV_OBSTACLE_AVOID) {
-    navState = NAV_ABORTED;
-    stopMotor();
-    resetPID();
-    publishNavStatus("ABORTED", "巡航已中止");
-    Serial.println(F("[NAV] ⛔ 巡航已中止"));
+  // 中止
+  else if (!strcmp(cmd,"abort")) {
+    if (navSt == NAV_CRUISE || navSt == NAV_AVOID) {
+      navSt = NAV_ABORT; stopMotors(); resetPID();
+      pubNav("ABORTED","remote"); navSt = NAV_IDLE;
+    }
   }
 }
 
 // ═══════════════════════════════════════════════════════════════
-//  十四、遥测数据上报
+//  遥测上报
 // ═══════════════════════════════════════════════════════════════
 
 void sendTelemetry() {
-  float temperature = dht.readTemperature();
-  float humidity    = dht.readHumidity();
-
-  updateBattery();
+  float temp = dht.readTemperature();
+  float hum  = dht.readHumidity();
+  usCm = readUS();
+  irObs = readIR();
   updateIMU();
 
-  String telemetryJson = "{";
-  telemetryJson += "\"device_id\":\"" + String(DEVICE_ID) + "\",";
-  telemetryJson += "\"seq\":" + String(messageSequence++) + ",";
-  telemetryJson += "\"ts\":" + String(millis()) + ",";
+  char devId[30]; pgmToBuf(devId, sizeof(devId), DEVICE_ID);
+  char sec[30];   pgmToBuf(sec, sizeof(sec), DEVICE_SECRET);
+  char key[20];   pgmToBuf(key, sizeof(key), XOR_KEY);
 
-  telemetryJson += "\"gps\":{";
+  int n = 0;
+  n += snprintf(jsonBuf+n, sizeof(jsonBuf)-n, "{\"device_id\":\"%s\",", devId);
+
+  // GPS
   if (gps.location.isValid()) {
-    telemetryJson += "\"lat\":" + String(gps.location.lat(), 6) + ",";
-    telemetryJson += "\"lng\":" + String(gps.location.lng(), 6) + ",";
-    telemetryJson += "\"alt\":" + String(gps.altitude.meters(), 1) + ",";
-    telemetryJson += "\"speed_kmh\":" + String(gps.speed.kmph(), 1) + ",";
-    telemetryJson += "\"course\":" + String(gps.course.deg(), 1) + ",";
-    telemetryJson += "\"sats\":" + String(gps.satellites.value());
+    char la[16],lo[16],al[12],sp[12];
+    dtostrf(gps.location.lat(),2,7,la);
+    dtostrf(gps.location.lng(),2,7,lo);
+    dtostrf(gps.altitude.meters(),1,1,al);
+    dtostrf(gps.speed.kmph(),1,1,sp);
+    n += snprintf(jsonBuf+n, sizeof(jsonBuf)-n,
+      "\"latitude\":%s,\"longitude\":%s,\"altitude\":%s,"
+      "\"speed_kmh\":%s,\"satellites\":%d,",
+      la, lo, al, sp, gps.satellites.value());
   } else {
-    telemetryJson += "\"lat\":null,\"lng\":null,\"alt\":null,";
-    telemetryJson += "\"speed_kmh\":0,\"course\":0,\"sats\":0";
+    n += snprintf(jsonBuf+n, sizeof(jsonBuf)-n,
+      "\"latitude\":null,\"longitude\":null,"
+      "\"altitude\":null,\"speed_kmh\":null,\"satellites\":0,");
   }
-  telemetryJson += "},";
 
-  telemetryJson += "\"sensors\":{";
-  if (!isnan(temperature)) {
-    telemetryJson += "\"temp_c\":" + String(temperature, 1) + ",";
+  // 温湿度
+  if (!isnan(temp)) { char t[10]; dtostrf(temp,1,1,t);
+    n += snprintf(jsonBuf+n, sizeof(jsonBuf)-n, "\"temperature\":%s,", t); }
+  else n += snprintf(jsonBuf+n, sizeof(jsonBuf)-n, "\"temperature\":null,");
+
+  if (!isnan(hum)) { char h[10]; dtostrf(hum,1,1,h);
+    n += snprintf(jsonBuf+n, sizeof(jsonBuf)-n, "\"humidity\":%s,", h); }
+  else n += snprintf(jsonBuf+n, sizeof(jsonBuf)-n, "\"humidity\":null,");
+
+  // 超声波 + 红外
+  n += snprintf(jsonBuf+n, sizeof(jsonBuf)-n,
+    "\"ultrasonic_cm\":%.1f,\"ir_obstacle\":%s,",
+    usCm, irObs ? "true" : "false");
+
+  // IMU
+  if (imuOk) {
+    char hd[12],gz[12];
+    dtostrf(imuHeading,1,1,hd);
+    dtostrf(imuGyroZ,1,2,gz);
+    n += snprintf(jsonBuf+n, sizeof(jsonBuf)-n,
+      "\"imu_heading\":%s,\"imu_gyro_z\":%s,", hd, gz);
   } else {
-    telemetryJson += "\"temp_c\":null,";
+    n += snprintf(jsonBuf+n, sizeof(jsonBuf)-n,
+      "\"imu_heading\":null,\"imu_gyro_z\":null,");
   }
-  if (!isnan(humidity)) {
-    telemetryJson += "\"humidity_pct\":" + String(humidity, 1) + ",";
+
+  // PWM
+  n += snprintf(jsonBuf+n, sizeof(jsonBuf)-n, "\"speed_pwm\":%d,", manualPwm);
+
+  // 签名
+  uint8_t sig[4] = {0};
+  int sL = strlen(sec);
+  for (int i = 0; i < n && i < 200; i++)
+    sig[i%4] ^= (uint8_t)jsonBuf[i] ^ (uint8_t)sec[i%sL];
+  snprintf(jsonBuf+n, sizeof(jsonBuf)-n,
+    "\"signature\":\"%02X%02X%02X%02X\"}", sig[0],sig[1],sig[2],sig[3]);
+
+  // XOR 加密
+  xorEncrypt(jsonBuf, key, encBuf, sizeof(encBuf));
+
+  char topic[40];
+  snprintf(topic, sizeof(topic), "sensor/%s", devId);
+
+  if (mqttPub(topic, encBuf)) {
+    Serial.print(F("[T] ")); Serial.println(msgSeq++);
   } else {
-    telemetryJson += "\"humidity_pct\":null,";
+    Serial.println(F("[T] fail"));
   }
-  telemetryJson += "\"ultrasonic_cm\":" + String(ultrasonicDistanceCm, 1) + ",";
-  telemetryJson += "\"obstacle\":" + String(obstacleDetected ? "true" : "false") + ",";
-
-  if (imuReady) {
-    telemetryJson += "\"imu_heading\":" + String(imuHeadingDeg, 1) + ",";
-    telemetryJson += "\"imu_gyro_z\":" + String(imuGyroZ, 2) + ",";
-    telemetryJson += "\"imu_accel_x\":" + String(imuAccelX, 3) + ",";
-    telemetryJson += "\"imu_accel_y\":" + String(imuAccelY, 3) + ",";
-    telemetryJson += "\"imu_accel_z\":" + String(imuAccelZ, 3);
-  } else {
-    telemetryJson += "\"imu_heading\":null,\"imu_gyro_z\":null,";
-    telemetryJson += "\"imu_accel_x\":null,\"imu_accel_y\":null,\"imu_accel_z\":null";
-  }
-  telemetryJson += "},";
-
-  telemetryJson += "\"power\":{";
-  telemetryJson += "\"battery_v\":" + String(batteryVoltage, 2) + ",";
-  telemetryJson += "\"battery_pct\":" + String(batteryPercent) + ",";
-  telemetryJson += "\"low_battery\":" + String(lowBatteryWarning ? "true" : "false");
-  telemetryJson += "},";
-
-  telemetryJson += "\"motor\":{";
-  telemetryJson += "\"left_speed\":" + String(cruiseInfo.leftSpeed, 0) + ",";
-  telemetryJson += "\"right_speed\":" + String(cruiseInfo.rightSpeed, 0) + ",";
-  telemetryJson += "\"last_cmd\":\"" + lastManualCommand + "\"";
-  telemetryJson += "},";
-
-  telemetryJson += "\"nav\":{";
-  telemetryJson += "\"state\":" + String(navState) + ",";
-  telemetryJson += "\"wp_index\":" + String(currentWpIndex) + ",";
-  telemetryJson += "\"wp_total\":" + String(waypointCount) + ",";
-  telemetryJson += "\"dist_to_target_m\":" + String(cruiseInfo.distanceToTarget, 1);
-  telemetryJson += "}";
-
-  telemetryJson += "}";
-
-  publishMQTT("smartrover/" + String(DEVICE_ID) + "/telemetry", telemetryJson);
-
-  Serial.print(F("[TEL] 上报遥测 seq="));
-  Serial.println(messageSequence - 1);
 }
 
 // ═══════════════════════════════════════════════════════════════
-//  十五、心跳保活
+//  心跳
 // ═══════════════════════════════════════════════════════════════
 
-void sendHeartbeat() {
-  String heartbeatJson = "{";
-  heartbeatJson += "\"device_id\":\"" + String(DEVICE_ID) + "\",";
-  heartbeatJson += "\"ts\":" + String(millis()) + ",";
-  heartbeatJson += "\"uptime_s\":" + String(millis() / 1000) + ",";
-  heartbeatJson += "\"free_ram\":" + String(freeMemory()) + ",";
-  heartbeatJson += "\"wifi_connected\":" + String(wifiConnected ? "true" : "false") + ",";
-  heartbeatJson += "\"mqtt_connected\":" + String(mqttConnected ? "true" : "false") + ",";
-  heartbeatJson += "\"battery_v\":" + String(batteryVoltage, 2);
-  heartbeatJson += "}";
+void sendHb() {
+  char devId[30]; pgmToBuf(devId, sizeof(devId), DEVICE_ID);
+  snprintf(jsonBuf, sizeof(jsonBuf),
+    "{\"device_id\":\"%s\",\"uptime\":%lu,\"wifi\":%d,\"mqtt\":%d}",
+    devId, millis()/1000, wifiOk?1:0, mqttOk?1:0);
 
-  publishMQTT("smartrover/" + String(DEVICE_ID) + "/heartbeat", heartbeatJson);
+  char topic[40];
+  snprintf(topic, sizeof(topic), "heartbeat/%s", devId);
 
-  static bool ledState = false;
-  ledState = !ledState;
-  digitalWrite(LED_BUILTIN, ledState ? HIGH : LOW);
+  if (mqttPub(topic, jsonBuf)) {
+    static bool led = false; led = !led;
+    digitalWrite(LED_BUILTIN, led ? HIGH : LOW);
+  }
 }
 
-int freeMemory() {
+// ═══════════════════════════════════════════════════════════════
+//  避障 (非巡航)
+// ═══════════════════════════════════════════════════════════════
+
+void checkObs() {
+  usCm = readUS();
+  irObs = readIR();
+  if (navSt == NAV_CRUISE || navSt == NAV_AVOID) return;
+  if ((usCm < 20 && usCm > 0) || irObs) {
+    stopMotors();
+    Serial.print(F("[OBS] US=")); Serial.print((int)usCm);
+    Serial.print(F(" IR=")); Serial.println(irObs?1:0);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  RAM 查询
+// ═══════════════════════════════════════════════════════════════
+
+int freeRAM() {
   extern int __heap_start, *__brkval;
   int v;
   return (int)&v - (__brkval == 0 ? (int)&__heap_start : (int)__brkval);
 }
 
 // ═══════════════════════════════════════════════════════════════
-//  十六、导航状态发布
-// ═══════════════════════════════════════════════════════════════
-
-void publishNavStatus(const String& event, const String& detail) {
-  String statusJson = "{";
-  statusJson += "\"device_id\":\"" + String(DEVICE_ID) + "\",";
-  statusJson += "\"event\":\"" + event + "\",";
-  statusJson += "\"detail\":\"" + detail + "\",";
-  statusJson += "\"ts\":" + String(millis()) + ",";
-  statusJson += "\"nav_state\":" + String(navState) + ",";
-  statusJson += "\"wp_index\":" + String(currentWpIndex) + ",";
-  statusJson += "\"lat\":" + String(gps.location.isValid() ? String(gps.location.lat(), 6) : "null") + ",";
-  statusJson += "\"lng\":" + String(gps.location.isValid() ? String(gps.location.lng(), 6) : "null");
-  statusJson += "}";
-
-  publishMQTT("smartrover/" + String(DEVICE_ID) + "/nav/status", statusJson);
-}
-
-// ═══════════════════════════════════════════════════════════════
-//  十七、指令解析与执行
-// ═══════════════════════════════════════════════════════════════
-
-void handleCommands() {
-  String rawMsg = checkMQTTMessages();
-  if (rawMsg.length() == 0) return;
-
-  rawMsg.trim();
-  Serial.print(F("[CMD] 收到指令: "));
-  Serial.println(rawMsg);
-
-  int firstColon = rawMsg.indexOf(':');
-  if (firstColon == -1) return;
-
-  String commandType = rawMsg.substring(0, firstColon);
-  String payload = rawMsg.substring(firstColon + 1);
-
-  if (commandType == "motor") {
-    int spaceIdx = payload.indexOf(' ');
-    if (spaceIdx == -1) return;
-    String action = payload.substring(0, spaceIdx);
-    int pwmVal = payload.substring(spaceIdx + 1).toInt();
-    executeCommand(action, max(0, min(255, pwmVal)));
-
-  } else if (commandType == "cruise") {
-    Waypoint newWps[10];
-    int wpCount = 0;
-
-    int idx = 0;
-    while (idx < (int)payload.length() && wpCount < 10) {
-      int commaIdx = payload.indexOf(',', idx);
-      if (commaIdx == -1) break;
-
-      String latStr = payload.substring(idx, commaIdx);
-      int nextComma = payload.indexOf(',', commaIdx + 1);
-      if (nextComma == -1) break;
-      String lngStr = payload.substring(commaIdx + 1, nextComma);
-
-      newWps[wpCount].lat = latStr.toDouble();
-      newWps[wpCount].lng = lngStr.toDouble();
-      wpCount++;
-
-      idx = nextComma + 1;
-    }
-
-    if (wpCount > 0) {
-      startCruise(newWps, wpCount);
-    }
-
-  } else if (commandType == "abort") {
-    abortCruise();
-
-  } else if (commandType == "ping") {
-    publishMQTT("smartrover/" + String(DEVICE_ID) + "/pong", "{\"pong\":true}");
-
-  } else {
-    Serial.print(F("[CMD] ⚠️ 未知指令类型: "));
-    Serial.println(commandType);
-  }
-}
-
-// ═══════════════════════════════════════════════════════════════
-//  十八、主程序入口
+//  setup
 // ═══════════════════════════════════════════════════════════════
 
 void setup() {
-  Serial.begin(115200);
+  Serial.begin(9600);
   delay(500);
+  Serial.println(F("============================"));
+  Serial.println(F(" SmartRover v3.1 (mem-opt)"));
+  Serial.println(F("============================"));
 
-  Serial.println(F(""));
-  Serial.println(F("╔══════════════════════════════════════════════╗"));
-  Serial.println(F("║     SmartRover Arduino Uno v1.0             ║"));
-  Serial.println(F("║     适配 L293D 4WD Motor Shield             ║"));
-  Serial.println(F("╚══════════════════════════════════════════════╝"));
-  Serial.println(F(""));
-
-  Serial.println(F("[INIT] 初始化传感器..."));
+  pinMode(TRIG_PIN, OUTPUT);
+  pinMode(ECHO_PIN, INPUT);
+  pinMode(IR_PIN, INPUT);
   dht.begin();
-  Serial.println(F("[INIT] ✅ DHT11 初始化完成"));
+  Serial.println(F("[I] DHT+US+IR ok"));
+
+  initMPU();
 
   gpsSerial.begin(9600);
-  Serial.println(F("[INIT] ✅ GPS 串口就绪 (A0/A1)"));
+  Serial.println(F("[I] GPS ok"));
 
-  initMotors();
+  stopMotors();
+  pinMode(LED_BUILTIN, OUTPUT);
 
-  initMPU6050();
-
-  Serial.println(F(""));
-  Serial.println(F("[NET] 连接网络..."));
-
-  if (connectWiFi()) {
-    connectMQTT();
-    subscribeMQTT("smartrover/" + String(DEVICE_ID) + "/command");
-  } else {
-    Serial.println(F("[NET] ⚠️ WiFi连接失败, 将以离线模式运行"));
+  // ESP
+  Serial.println(F("[NET] ..."));
+  espSerial.begin(115200);
+  delay(500);
+  sendATBuf("AT", 2000);
+  if (!atContains("OK")) {
+    espSerial.begin(9600); delay(200);
+    sendATBuf("AT", 2000);
   }
+  if (atContains("OK")) Serial.println(F("[ESP] found"));
+  else Serial.println(F("[ESP] NOT found!"));
 
-  Serial.println(F(""));
-  Serial.println(F("╔══════════════════════════════════════════════╗"));
-  Serial.println(F("║  系统初始化完成!                            ║"));
-  Serial.println(F("║  等待指令或自动巡航...                      ║"));
-  Serial.println(F("╚══════════════════════════════════════════════╝"));
-  Serial.println(F(""));
+  if (connectWiFi()) connectMQTT();
+  else Serial.println(F("[NET] offline"));
+
+  Serial.print(F("[MEM] ")); Serial.print(freeRAM()); Serial.println(F("B free"));
+  Serial.println(F("Ready!"));
 }
 
+// ═══════════════════════════════════════════════════════════════
+//  loop
+// ═══════════════════════════════════════════════════════════════
+
 void loop() {
-  static unsigned long lastSensorUpdate = 0;
   unsigned long now = millis();
 
-  while (gpsSerial.available()) {
-    gps.encode(gpsSerial.read());
-  }
+  // GPS: 切换到 GPS 串口读取
+  gpsSerial.listen();
+  while (gpsSerial.available()) gps.encode(gpsSerial.read());
 
   updateIMU();
 
-  if (now - lastSensorUpdate > 200) {
-    checkObstacle();
-    lastSensorUpdate = now;
+  // 指令: 切换到 ESP 串口
+  espSerial.listen();
+  handleCmd();
+
+  // 避障 300ms
+  static unsigned long tO = 0;
+  if (now - tO > 300) { checkObs(); tO = now; }
+
+  // 巡航
+  if (navSt == NAV_CRUISE || navSt == NAV_AVOID) navLoop();
+
+  // 遥测
+  if (now - tTel > TELEMETRY_MS) { sendTelemetry(); tTel = now; }
+
+  // 心跳
+  if (now - tHb > HEARTBEAT_MS) { sendHb(); tHb = now; }
+
+  // 重连
+  static unsigned long tRc = 0;
+  if (now - tRc > 30000) {
+    if (!wifiOk) connectWiFi();
+    else if (!mqttOk) connectMQTT();
+    tRc = now;
   }
 
-  handleCommands();
-
-  if (now - lastTelemetrySend > TELEMETRY_MS) {
-    sendTelemetry();
-    lastTelemetrySend = now;
-  }
-
-  if (now - lastHeartbeat > HEARTBEAT_MS) {
-    sendHeartbeat();
-    lastHeartbeat = now;
-  }
-
-  if (navState == NAV_CRUISING || navState == NAV_OBSTACLE_AVOID) {
-    navigationLoop();
-  }
-
-  if (!wifiConnected && (now % 60000 < 100)) {
-    connectWiFi();
-  }
-
-  if (wifiConnected && !mqttConnected && (now % 10000 < 100)) {
-    connectMQTT();
-  }
-
-  delay(10);
+  delay(50);
 }

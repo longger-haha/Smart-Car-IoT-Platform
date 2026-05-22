@@ -108,3 +108,63 @@ def hmac_verify(secret: str, message: str, signature: str) -> bool:
     """
     expected = hmac_sign(secret, message)
     return hmac.compare_digest(expected, signature.lower())
+
+
+# ── XOR 轻量化加密/解密 (UNO 兼容) ───────────────────────────────────────────
+
+def xor_decrypt(key: bytes, token: str) -> str:
+    """
+    解密 XOR 加密的遥测数据（Arduino UNO 端使用）。
+
+    数据格式: "XOR:" + base64(xor_encrypt(plaintext, key))
+
+    Args:
+        key:   XOR 密钥字节（与 UNO 端 XOR_KEY 一致）
+        token: "XOR:<base64_data>" 格式字符串
+
+    Returns:
+        解密后的 UTF-8 明文字符串
+
+    Raises:
+        ValueError: 格式错误或解密失败
+    """
+    if not token.startswith('XOR:'):
+        raise ValueError('Not an XOR-encrypted token (missing XOR: prefix)')
+
+    try:
+        b64_data = token[4:]  # 去掉 "XOR:" 前缀
+        xored = base64.b64decode(b64_data)
+
+        # XOR 解密 (与加密相同操作)
+        key_len = len(key)
+        plain_bytes = bytes(xored[i] ^ key[i % key_len] for i in range(len(xored)))
+
+        return plain_bytes.decode('utf-8')
+    except Exception as e:
+        raise ValueError(f'XOR decryption failed: {e}') from e
+
+
+def xor_verify_checksum(secret: str, message: str, signature: str) -> bool:
+    """
+    验证 UNO 端生成的简易 XOR 校验和签名。
+
+    UNO 端签名算法: 将 JSON 内容与 DEVICE_SECRET 做 XOR, 取前 4 字节转十六进制
+
+    Args:
+        secret:    设备共享密钥
+        message:   原始消息字符串（去掉 signature 字段后的 JSON）
+        signature: 8 字符十六进制签名
+
+    Returns:
+        True 表示签名合法
+    """
+    try:
+        sig_buf = [0, 0, 0, 0]
+        s_len = len(secret)
+        for i, ch in enumerate(message[:200]):
+            sig_buf[i % 4] ^= ord(ch) ^ ord(secret[i % s_len])
+
+        expected = ''.join(f'{b:02X}' for b in sig_buf)
+        return hmac.compare_digest(expected, signature.upper())
+    except Exception:
+        return False

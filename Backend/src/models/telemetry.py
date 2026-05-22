@@ -19,7 +19,13 @@ class TelemetryPoint(db.Model):
     temperature    = db.Column(db.Float,          nullable=True,  comment='温度(°C)')
     humidity       = db.Column(db.Float,          nullable=True,  comment='湿度(%)')
     ultrasonic_cm  = db.Column(db.Float,          nullable=True,  comment='超声波距离(cm)')
+    ir_obstacle    = db.Column(db.Boolean,         nullable=True,  comment='红外避障(True=检测到)')
+    imu_heading    = db.Column(db.Float,          nullable=True,  comment='IMU航向角(°)')
+    imu_gyro_z     = db.Column(db.Float,          nullable=True,  comment='IMU Z轴角速度(°/s)')
     speed_pwm      = db.Column(db.SmallInteger,   nullable=True,  comment='电机PWM值')
+    altitude       = db.Column(db.Float,          nullable=True,  comment='GPS海拔(m)')
+    speed_kmh      = db.Column(db.Float,          nullable=True,  comment='GPS速度(km/h)')
+    satellites     = db.Column(db.SmallInteger,   nullable=True,  comment='GPS卫星数')
     raw_ciphertext = db.Column(db.Text,           nullable=True,  comment='原始接收密文')
     recorded_at    = db.Column(db.DateTime,       nullable=False, default=datetime.utcnow,
                                index=True, comment='数据时间戳')
@@ -38,7 +44,13 @@ class TelemetryPoint(db.Model):
             'temperature':    self.temperature,
             'humidity':       self.humidity,
             'ultrasonic_cm':  self.ultrasonic_cm,
+            'ir_obstacle':    self.ir_obstacle,
+            'imu_heading':    self.imu_heading,
+            'imu_gyro_z':     self.imu_gyro_z,
             'speed_pwm':      self.speed_pwm,
+            'altitude':       self.altitude,
+            'speed_kmh':      self.speed_kmh,
+            'satellites':     self.satellites,
             'raw_ciphertext': self.raw_ciphertext,
             'recorded_at':    self.recorded_at.isoformat() if self.recorded_at else None,
         }
