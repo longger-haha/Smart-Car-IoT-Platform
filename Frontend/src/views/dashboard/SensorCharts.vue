@@ -28,6 +28,7 @@
 <script setup>
 import { ref, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import * as echarts from 'echarts'
+import { TrendCharts } from '@element-plus/icons-vue'
 
 const props = defineProps({
   telemetryData: {

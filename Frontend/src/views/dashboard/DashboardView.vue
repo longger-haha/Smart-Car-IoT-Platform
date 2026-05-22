@@ -164,7 +164,7 @@
 </template>
 
 <script setup>
-import { ref, reactive, onMounted, nextTick, watch, computed } from 'vue'
+import { ref, reactive, onMounted, onUnmounted, nextTick, watch, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import * as echarts from 'echarts'
 import { Monitor, Connection, Warning, Document } from '@element-plus/icons-vue'
@@ -226,6 +226,7 @@ async function fetchStats() {
     })
   } catch (e) {
     console.error('获取统计数据失败', e)
+    statsLoading.value = false
   }
 }
 
