@@ -36,7 +36,7 @@ const routes = [
         path: 'audit',
         name: 'AuditLogs',
         component: () => import('@/views/audit_logs/AuditLogsView.vue'),
-        meta: { title: '审计日志', requiresAuth: true, requiresAdmin: true },
+        meta: { title: '审计日志', requiresAuth: true },
       },
     ],
   },

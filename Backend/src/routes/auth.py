@@ -12,7 +12,7 @@ from datetime import datetime
 from flask import Blueprint, request, jsonify
 from flask_jwt_extended import create_access_token
 
-from src.extensions import db
+from src.extensions import db, limiter
 from src.models.user import User
 from src.models.audit_log import SecurityAuditLog
 
@@ -20,6 +20,7 @@ auth_bp = Blueprint('auth', __name__)
 
 
 @auth_bp.post('/login')
+@limiter.limit("5 per minute")
 def login():
     """
     用户登录接口
@@ -53,6 +54,7 @@ def login():
             event_type='auth_fail',
             source_ip=request.remote_addr,
             detail=f'Login failed for username={username!r}',
+            user_id=user.id if user else None,
         )
         db.session.commit()
         return jsonify({'error': '用户名或密码错误'}), 401

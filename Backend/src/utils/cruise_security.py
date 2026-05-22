@@ -64,16 +64,15 @@ def verify_signature(payload_dict: dict) -> Tuple[bool, str]:
     return True, ''
 
 
-def check_replay_attack(timestamp: int) -> Tuple[bool, str]:
+_used_cruise_nonces: Dict[str, float] = {}
+
+def check_replay_attack(timestamp: int, nonce: str) -> Tuple[bool, str]:
     """
     检测重放攻击
-
-    Args:
-        timestamp: 指令中的 Unix 时间戳
-
-    Returns:
-        (is_safe, reason) 元组
     """
+    if not nonce:
+        return False, '缺少 nonce 字段'
+
     now = int(time.time())
     diff = abs(now - timestamp)
 
@@ -82,6 +81,16 @@ def check_replay_attack(timestamp: int) -> Tuple[bool, str]:
 
     if timestamp > now + 60:
         return False, '时间戳在未来超过60s，可能为时钟攻击'
+
+    if nonce in _used_cruise_nonces:
+        return False, '防重放校验失败：Nonce 已被使用'
+
+    _used_cruise_nonces[nonce] = time.time()
+
+    # 清理过期的 nonce
+    expired_keys = [k for k, v in _used_cruise_nonces.items() if time.time() - v > REPLAY_WINDOW_SECONDS]
+    for k in expired_keys:
+        del _used_cruise_nonces[k]
 
     return True, ''
 
@@ -179,8 +188,10 @@ def validate_cruise_command(data: dict, device_online: bool = True) -> Tuple[boo
     else:
         warnings.append('[签名验证] ⚠️ 未提供签名（建议启用）')
 
+    nonce = data.get('nonce', '')
+
     if timestamp:
-        safe, reason = check_replay_attack(timestamp)
+        safe, reason = check_replay_attack(timestamp, nonce)
         if not safe:
             errors.append(f'[重放检测] {reason}')
         else:

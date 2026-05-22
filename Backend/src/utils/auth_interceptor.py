@@ -31,7 +31,22 @@ from flask import request, jsonify, current_app
 from flask_jwt_extended import verify_jwt_in_request, get_jwt
 
 
-def _write_audit(event_type: str, detail: str = None, target_device_id: str = None):
+def _resolve_user_id():
+    """从当前 JWT 中解析 user_id，若无法解析则返回 None。"""
+    try:
+        from src.models.user import User
+        from src.extensions import db
+        claims = get_jwt()
+        username = claims.get('sub')
+        if username:
+            u = User.query.filter_by(username=username).first()
+            return u.id if u else None
+    except Exception:
+        pass
+    return None
+
+
+def _write_audit(event_type: str, detail: str = None, target_device_id: str = None, user_id: int = None):
     """安全地将一条审计日志写入数据库，失败时静默忽略（避免审计本身引发 500）。"""
     try:
         from src.extensions import db
@@ -43,6 +58,7 @@ def _write_audit(event_type: str, detail: str = None, target_device_id: str = No
             source_ip=source_ip,
             target_device_id=target_device_id,
             detail=detail,
+            user_id=user_id,
         )
         db.session.commit()
     except Exception as exc:
@@ -86,6 +102,7 @@ def jwt_required_with_rbac(roles: list):
                         f'User {username!r} with role {user_role!r} '
                         f'attempted to access endpoint requiring {roles}'
                     ),
+                    user_id=_resolve_user_id(),
                 )
                 return jsonify({
                     'error': '无权限：鉴权受阻',
@@ -97,14 +114,18 @@ def jwt_required_with_rbac(roles: list):
     return decorator
 
 
+_used_nonces = {}
+
 def replay_protected(fn):
     """
     装饰器：校验请求体 JSON 中的 `timestamp` 字段，
     超过 REPLAY_WINDOW_SECONDS 则视为重放攻击并拒绝。
+    同时校验 `nonce` 字段，防止窗口期内的精确重播。
 
     请求体格式要求:
         {
             "timestamp": 1714567890,   // Unix 时间戳 (秒)
+            "nonce": "...",            // 唯一随机字符串，防止重放
             "device_id": "...",        // 可选，用于审计
             ...
         }
@@ -113,6 +134,7 @@ def replay_protected(fn):
     def wrapper(*args, **kwargs):
         data = request.get_json(silent=True) or {}
         ts   = data.get('timestamp')
+        nonce = data.get('nonce')
 
         # timestamp 缺失视为异常
         if ts is None:
@@ -121,14 +143,23 @@ def replay_protected(fn):
                 detail='Missing timestamp field in request body',
             )
             return jsonify({'error': '缺少时间戳字段，请求被拒绝'}), 403
+            
+        # nonce 缺失视为异常
+        if not nonce:
+            _write_audit(
+                event_type='replay',
+                detail='Missing nonce field in request body',
+            )
+            return jsonify({'error': '缺少nonce字段，请求被拒绝'}), 403
 
         # 时间差检查
         window  = current_app.config.get('REPLAY_WINDOW_SECONDS', 30)
         now_ts  = time.time()
         delta   = abs(now_ts - float(ts))
 
+        device_id = data.get('device_id')
+
         if delta > window:
-            device_id = data.get('device_id')
             _write_audit(
                 event_type='replay',
                 detail=(
@@ -141,6 +172,23 @@ def replay_protected(fn):
                 'error':  '防重放校验失败：时间戳过期',
                 'detail': f'时间差 {delta:.1f}s 超过容忍窗口 {window}s',
             }), 403
+            
+        # 校验 nonce 是否被使用过
+        if nonce in _used_nonces:
+            _write_audit(
+                event_type='replay',
+                detail=f'Nonce {nonce!r} has been used before',
+                target_device_id=device_id,
+            )
+            return jsonify({'error': '防重放校验失败：Nonce 已被使用'}), 403
+            
+        # 记录 nonce
+        _used_nonces[nonce] = now_ts
+        
+        # 清理过期的 nonce
+        expired_keys = [k for k, v in _used_nonces.items() if now_ts - v > window]
+        for k in expired_keys:
+            del _used_nonces[k]
 
         return fn(*args, **kwargs)
     return wrapper
@@ -194,7 +242,8 @@ def require_device_ownership(fn):
             _write_audit(
                 event_type='rbac_deny',
                 detail=f'Cross-tenant horizontal privilege escalation attempt! User {username!r} tried to access device {device_id!r} owned by user_id {target_device.user_id}.',
-                target_device_id=device_id
+                target_device_id=device_id,
+                user_id=current_user.id if current_user else None,
             )
             return jsonify({
                 'error': '无权限：该设备不属于您',

@@ -17,6 +17,7 @@ T060 [US3]: 实时位置跟踪与自动驾驶状态监控
 import time
 import json
 from datetime import datetime, timedelta
+from math import cos
 
 from flask import Blueprint, request, jsonify
 from sqlalchemy import desc, func
@@ -112,11 +113,13 @@ def dispatch_route():
     device = Device.query.filter_by(device_id=device_id).first()
     device_online = device.status == 'online' if device else False
 
-    dispatched_at = int(time.time())
+    timestamp = data.get('timestamp') or int(time.time())
     payload_for_check = {
         'command':   'route',
         'device_id': device_id,
-        'timestamp': dispatched_at,
+        'timestamp': timestamp,
+        'nonce': data.get('nonce', ''),
+        'signature': data.get('signature', ''),
         'waypoints': [{'lat': float(wp['lat']), 'lng': float(wp['lng'])} for wp in waypoints],
     }
 
@@ -141,21 +144,21 @@ def dispatch_route():
         'device_id':      device_id,
         'waypoints':      payload['waypoints'],
         'waypoint_count': len(payload['waypoints']),
-        'dispatched_at':  dispatched_at,
+        'dispatched_at':  timestamp,
     }
 
     _nav_status_cache[device_id] = {
         'state':         'dispatched',
         'wp_index':      0,
         'wp_total':      len(payload['waypoints']),
-        'started_at':    dispatched_at,
+        'started_at':    timestamp,
     }
 
     return jsonify({
         'message':        '巡航路线已下发',
         'device_id':      device_id,
         'waypoint_count': len(waypoints),
-        'dispatched_at':  dispatched_at,
+        'dispatched_at':  timestamp,
     }), 200
 
 

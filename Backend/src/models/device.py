@@ -36,6 +36,7 @@ class Device(db.Model):
         data = {
             'id':            self.id,
             'user_id':       self.user_id,
+            'username':      self.user.username if self.user else None,
             'device_id':     self.device_id,
             'name':          self.name,
             'status':        self.status,

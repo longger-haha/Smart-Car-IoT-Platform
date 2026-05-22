@@ -2,14 +2,14 @@
   <div class="control-panel">
     <el-row :gutter="16">
       <el-col :span="24">
-        <h2 style="margin-bottom: 8px;">🚗 车辆控制台</h2>
+        <h2 style="margin-bottom: 8px; color: var(--text-primary); font-size: 18px;">车辆控制台</h2>
       </el-col>
 
 
 
-      <el-col :span="6">
+      <el-col :xs="24" :sm="6">
         <el-card shadow="hover" class="panel-card">
-          <template #header><span>📱 设备选择</span></template>
+          <template #header><span>设备选择</span></template>
           <el-select
             v-model="selectedDeviceId"
             placeholder="请选择设备"
@@ -26,56 +26,56 @@
         </el-card>
       </el-col>
 
-      <el-col :span="18">
+      <el-col :xs="24" :sm="18">
         <el-card shadow="hover" class="panel-card">
-          <template #header><span>🎮 远程指令</span></template>
+          <template #header><span>远程指令</span></template>
           <div class="control-buttons">
             <el-button type="primary" size="large" :disabled="!selectedDeviceId" @click="sendCmd('forward')">
-              ⬆️ 前进
+              前进
             </el-button>
             <el-button type="primary" size="large" :disabled="!selectedDeviceId" @click="sendCmd('left')">
-              ⬅️ 左转
+              左转
             </el-button>
             <el-button type="danger" size="large" :disabled="!selectedDeviceId" @click="sendCmd('stop')">
-              🛑 停止
+              停止
             </el-button>
             <el-button type="primary" size="large" :disabled="!selectedDeviceId" @click="sendCmd('right')">
-              ➡️ 右转
+              右转
             </el-button>
             <el-button type="warning" size="large" :disabled="!selectedDeviceId" @click="sendCmd('backward')">
-              ⬇️ 后退
+              后退
             </el-button>
           </div>
         </el-card>
       </el-col>
 
-      <el-col :span="12">
+      <el-col :xs="24" :lg="12">
         <el-card shadow="hover" class="panel-card">
           <template #header>
-            <span>🗺️ 巡航路线规划</span>
+            <span>巡航路线规划</span>
           </template>
           <div id="map-container" class="map-container"></div>
           <div style="margin-top:10px;display:flex;gap:8px;align-items:center;">
-            <span style="font-size:13px;color:#666;">已选 {{ waypoints.length }} 个航点</span>
+            <span class="wp-count">已选 {{ waypoints.length }} 个航点</span>
             <el-button size="small" type="danger" plain @click="clearWaypoints">清空</el-button>
             <el-button size="small" type="success" :loading="routeLoading" :disabled="waypoints.length<2 || !selectedDeviceId" @click="dispatchRoute">
               下发巡航路线
             </el-button>
           </div>
-          <div v-if="lastRouteInfo" style="margin-top:8px;font-size:13px;color:#67c23a;">
-            ✅ 已下发 {{ lastRouteInfo.waypoint_count }} 个航点 ({{ formatTime(lastRouteInfo.dispatched_at) }})
+          <div v-if="lastRouteInfo" class="route-done">
+            已下发 {{ lastRouteInfo.waypoint_count }} 个航点 ({{ formatTime(lastRouteInfo.dispatched_at) }})
           </div>
         </el-card>
       </el-col>
 
-      <el-col :span="12">
+      <el-col :xs="24" :lg="12">
         <el-card shadow="hover" class="panel-card">
-          <template #header><span>📍 实时轨迹</span></template>
+          <template #header><span>实时轨迹</span></template>
           <div id="trajectory-map" class="map-container"></div>
           <div style="margin-top:8px;display:flex;justify-content:space-between;align-items:center;">
-            <span style="font-size:13px;">
+            <span class="cruise-info">
               <el-tag :type="cruiseStateTagType" size="small">{{ cruiseStateLabel }}</el-tag>
-              <span v-if="cruiseStatus?.stats" style="margin-left:8px;color:#666;">
+              <span v-if="cruiseStatus?.stats" class="cruise-stats">
                 {{ cruiseStatus.stats.total_waypoints_reached || 0 }}/{{ cruiseStatus.stats.wp_total || 0 }} 航点
                 · {{ cruiseStatus.stats.distance_traveled_m || 0 }}m
               </span>
@@ -88,7 +88,7 @@
       <el-col :span="24">
         <el-card shadow="hover" class="panel-card">
           <template #header>
-            <span>🧭 自动驾驶状态监控</span>
+            <span>自动驾驶状态监控</span>
             <el-button size="small" style="float:right;margin-top:-4px;" @click="refreshCruiseStatus">刷新</el-button>
           </template>
           <el-row :gutter="16">
@@ -167,7 +167,7 @@
       <el-col :span="24">
         <el-card shadow="hover" class="panel-card">
           <template #header>
-            <span>📋 导航事件时间线</span>
+            <span>导航事件时间线</span>
             <el-button size="small" style="float:right;margin-top:-4px;" @click="loadNavEvents">刷新</el-button>
           </template>
           <el-timeline v-if="navEvents.length > 0">
@@ -182,7 +182,7 @@
                 <el-tag :type="eventTypeTag(evt.event_type)" size="small">{{ evt.event_type }}</el-tag>
                 <span class="evt-detail">{{ evt.detail }}</span>
                 <span v-if="evt.lat && evt.lng" class="evt-coords">
-                  📍 {{ Number(evt.lat).toFixed(5) }}, {{ Number(evt.lng).toFixed(5) }}
+                  {{ Number(evt.lat).toFixed(5) }}, {{ Number(evt.lng).toFixed(5) }}
                 </span>
                 <span v-if="evt.wp_index != null" class="evt-wp">
                   航点 {{ evt.wp_index }}/{{ evt.wp_total }}
@@ -199,10 +199,11 @@
 
 <script setup>
 import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import AMapLoader from '@amap/amap-jsapi-loader'
 import { AMAP_KEY, AMAP_VERSION, AMAP_SECURITY_KEY } from '@/config/amap'
 import { vehicleAPI, deviceAPI } from '@/api'
+import { formatTime } from '@/utils/format'
 
 const deviceList = ref([])
 const selectedDeviceId = ref('')
@@ -313,6 +314,13 @@ async function dispatchRoute() {
     ElMessage.warning('请至少选择2个航点')
     return
   }
+  try {
+    await ElMessageBox.confirm(
+      `确认向设备下发 ${waypoints.value.length} 个巡航航点？`,
+      '确认下发路线',
+      { confirmButtonText: '确认下发', cancelButtonText: '取消', type: 'warning' }
+    )
+  } catch { return }
   routeLoading.value = true
   try {
     const res = await vehicleAPI.dispatchRoute(selectedDeviceId.value, waypoints.value)
@@ -352,9 +360,7 @@ async function refreshCruiseStatus() {
   try {
     const res = await vehicleAPI.getCruiseStatus(selectedDeviceId.value)
     cruiseStatus.value = res
-  } catch (err) {
-    // ignore
-  }
+  } catch (err) { console.error('刷新巡航状态失败', err) }
 }
 
 async function fetchPosition() {
@@ -363,9 +369,7 @@ async function fetchPosition() {
     const res = await vehicleAPI.getPosition(selectedDeviceId.value)
     positionData.value = res
     drawPositionMarker(res)
-  } catch (err) {
-    // ignore - no data yet
-  }
+  } catch (err) { console.error('获取位置失败', err) }
 }
 
 function drawPositionMarker(pos) {
@@ -397,9 +401,7 @@ async function refreshTrajectory() {
         )
       }
     }
-  } catch (err) {
-    // ignore
-  }
+  } catch (err) { console.error('刷新轨迹失败', err) }
 }
 
 function drawTrajectory(points) {
@@ -460,13 +462,6 @@ function stopPolling() {
   if (navEventTimer) { clearInterval(navEventTimer); navEventTimer = null }
 }
 
-function formatTime(ts) {
-  if (!ts) return ''
-  const d = new Date(ts)
-  const pad = n => String(n).padStart(2, '0')
-  return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
-}
-
 function eventTypeTag(type) {
   const map = {
     CRUISE_STARTED: '',
@@ -512,10 +507,10 @@ const cruiseStateTagType = computed(() => {
 const navStateColor = computed(() => {
   const s = cruiseStatus.value?.nav_state
   const colors = {
-    idle: '#909399', dispatched: '#409eff', cruising: '#67c23a',
-    avoiding: '#e6a23c', arrived: '#67c23a', aborted: '#f56c6c', unknown: '#909399',
+    idle: '#8892a4', dispatched: '#3b82f6', cruising: '#22c55e',
+    avoiding: '#f59e0b', arrived: '#22c55e', aborted: '#ef4444', unknown: '#8892a4',
   }
-  return colors[s] || '#909399'
+  return colors[s] || '#8892a4'
 })
 const cruiseStatusLabel = cruiseStateLabel
 const currentWpDisplay = computed(() => {
@@ -549,32 +544,38 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
-.control-panel { padding: 20px; }
+.control-panel { }
 .panel-card { margin-bottom: 16px; }
 .control-buttons {
   display: flex; gap: 12px;
   justify-content: center; align-items: center;
 }
 .map-container {
-  width: 100%; height: 320px; border-radius: 6px;
-  background: #f5f7fa;
+  width: 100%; height: 320px;
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  background: var(--bg-primary);
 }
 .stat-item {
   text-align: center; padding: 12px 0;
-  border-right: 1px solid #ebeef5;
+  border-right: 1px solid var(--border-color);
 }
 .stat-item:last-child { border-right: none; }
-.stat-label { font-size: 13px; color: #909399; margin-bottom: 6px; }
-.stat-value { font-size: 22px; font-weight: bold; }
+.stat-label { font-size: 13px; color: var(--text-secondary); margin-bottom: 6px; }
+.stat-value { font-size: 22px; font-weight: bold; color: var(--text-primary); }
 .stat-mini {
   text-align: center; padding: 8px 4px;
-  border-right: 1px solid #f0f0f0;
+  border-right: 1px solid var(--border-color);
 }
 .stat-mini:last-child { border-right: none; }
-.mini-label { display: block; font-size: 11px; color: #b0b0b0; }
-.mini-value { display: block; font-size: 14px; font-weight: 600; color: #303133; margin-top: 2px; }
+.mini-label { display: block; font-size: 11px; color: var(--text-secondary); }
+.mini-value { display: block; font-size: 14px; font-weight: 600; color: var(--text-primary); margin-top: 2px; }
 .nav-event-item { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.evt-detail { font-size: 14px; color: #303133; }
-.evt-coords { font-size: 12px; color: #909399; }
-.evt-wp { font-size: 12px; color: #409eff; font-weight: 500; }
+.evt-detail { font-size: 14px; color: var(--text-primary); }
+.evt-coords { font-size: 12px; color: var(--text-secondary); }
+.evt-wp { font-size: 12px; color: var(--accent); font-weight: 500; }
+.wp-count { font-size: 13px; color: var(--text-secondary); }
+.route-done { margin-top: 8px; font-size: 13px; color: var(--accent-success); }
+.cruise-info { font-size: 13px; display: flex; align-items: center; gap: 8px; }
+.cruise-stats { color: var(--text-secondary); }
 </style>

@@ -76,6 +76,16 @@ def _on_message(client, userdata, msg):
             logger.warning(f'[MQTT] Unknown topic: {topic}')
 
 
+def _get_device_owner_id(device_id: str):
+    """根据 device_id 反查设备所属用户 ID，失败返回 None。"""
+    try:
+        from src.models.device import Device
+        d = Device.query.filter_by(device_id=device_id).first()
+        return d.user_id if d else None
+    except Exception:
+        return None
+
+
 def _process_telemetry(device_id: str, raw_payload: bytes):
     """在 Flask 应用上下文中处理消息，写入数据库"""
     from src.extensions import db
@@ -101,6 +111,7 @@ def _process_telemetry(device_id: str, raw_payload: bytes):
                 event_type='auth_fail',
                 target_device_id=device_id,
                 detail='AES decryption failed — possible unauthorized device or tampered data',
+                user_id=_get_device_owner_id(device_id),
             )
             db.session.commit()
             return
@@ -114,6 +125,7 @@ def _process_telemetry(device_id: str, raw_payload: bytes):
                 event_type='auth_fail',
                 target_device_id=device_id,
                 detail='JSON parse failed after decryption',
+                user_id=_get_device_owner_id(device_id),
             )
             db.session.commit()
             return
@@ -128,6 +140,7 @@ def _process_telemetry(device_id: str, raw_payload: bytes):
                 event_type='auth_fail',
                 target_device_id=msg_device_id,
                 detail=f'Device {msg_device_id!r} not in whitelist — message rejected',
+                user_id=_get_device_owner_id(msg_device_id),
             )
             db.session.commit()
             return
@@ -143,6 +156,7 @@ def _process_telemetry(device_id: str, raw_payload: bytes):
                     event_type='sig_invalid',
                     target_device_id=msg_device_id,
                     detail='HMAC-SHA256 signature mismatch',
+                    user_id=device.user_id,
                 )
                 db.session.commit()
                 return
