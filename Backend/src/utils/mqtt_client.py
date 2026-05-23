@@ -57,6 +57,10 @@ def _on_message(client, userdata, msg):
     topic   = msg.topic
     payload = msg.payload
 
+    # 调试: 打印实际收到的 topic 和 payload 前 80 字节
+    logger.info(f'[MQTT] RECV topic={topic!r} len={len(payload)} '
+                f'preview={payload[:80]}')
+
     parts     = topic.split('/', 1)
     topic_type = parts[0] if len(parts) > 1 else 'unknown'
     device_id = parts[1] if len(parts) > 1 else 'unknown'
@@ -130,8 +134,12 @@ def _process_telemetry(device_id: str, raw_payload: bytes):
         # ── 2. JSON 解析 ─────────────────────────────────────────────
         try:
             data = json.loads(plaintext)
-        except json.JSONDecodeError:
-            logger.warning(f'[MQTT] JSON parse failed for device_id={device_id!r}')
+        except json.JSONDecodeError as je:
+            logger.warning(
+                f'[MQTT] JSON parse failed for device_id={device_id!r} '
+                f'encrypt={encrypt_type} plaintext_len={len(plaintext)} '
+                f'plaintext_preview={plaintext[:200]!r} error={je}'
+            )
             SecurityAuditLog.record(
                 event_type='auth_fail',
                 target_device_id=device_id,
@@ -174,7 +182,17 @@ def _process_telemetry(device_id: str, raw_payload: bytes):
                     return
             else:
                 # XOR 设备 (UNO): 简易 XOR 校验和验证
-                msg_body = json.dumps({k: v for k, v in data.items()}, sort_keys=True)
+                # 固件签名时 JSON 结尾是 "last_field," (无 "signature" 和 "}")
+                # 必须用原始顺序的 JSON，不能 sort_keys 重排
+                # 注意: re.sub 去掉 signature 时要保留前面的逗号,
+                # 因为固件计算签名时 JSON 是 "speed_pwm":150, (有逗号)
+                import re
+                msg_body = re.sub(r',"signature":"[A-Fa-f0-9]{8}"\}', ',', plaintext)
+                logger.info(
+                    f'[MQTT] SIG DEBUG device={msg_device_id!r} '
+                    f'sig={signature!r} msg_body={msg_body[:200]!r} '
+                    f'secret={device.device_secret[:16]!r}...'
+                )
                 if not xor_verify_checksum(device.device_secret, msg_body, signature):
                     logger.warning(f'[MQTT] XOR checksum verify failed for device {msg_device_id!r}')
                     SecurityAuditLog.record(
@@ -213,26 +231,30 @@ def _process_telemetry(device_id: str, raw_payload: bytes):
         db.session.commit()
 
         # ── 7. 碰撞预防：超声波或红外检测到障碍 ──────────────────────
-        SAFE_DISTANCE_CM = 50
-        ultrasonic_val = data.get('ultrasonic_cm')
-        ir_val = data.get('ir_obstacle')
-        collision_detected = (
-            (ultrasonic_val is not None and ultrasonic_val < SAFE_DISTANCE_CM) or
-            (ir_val is True)
-        )
-        if collision_detected:
-            logger.warning(
-                f'[MQTT] ⚠️ COLLISION WARNING: device={msg_device_id!r} '
-                f'ultrasonic={ultrasonic_val}cm < {SAFE_DISTANCE_CM}cm — '
-                f'sending emergency STOP command'
+        # 暂时禁用: 每次遥测都触发 stop 会淹没手动控制指令
+        # TODO: 改为节流 (每30秒最多发一次) 或由前端控制开关
+        COLLISION_PREVENTION_ENABLED = False
+        if COLLISION_PREVENTION_ENABLED:
+            SAFE_DISTANCE_CM = 50
+            ultrasonic_val = data.get('ultrasonic_cm')
+            ir_val = data.get('ir_obstacle')
+            collision_detected = (
+                (ultrasonic_val is not None and ultrasonic_val < SAFE_DISTANCE_CM) or
+                (ir_val is True)
             )
-            emergency_payload = {
-                'command':   'stop',
-                'device_id': msg_device_id,
-                'timestamp': int(time.time()),
-                'reason':    'collision_prevention',
-            }
-            publish_command(msg_device_id, emergency_payload)
+            if collision_detected:
+                logger.warning(
+                    f'[MQTT] ⚠️ COLLISION WARNING: device={msg_device_id!r} '
+                    f'ultrasonic={ultrasonic_val}cm < {SAFE_DISTANCE_CM}cm — '
+                    f'sending emergency STOP command'
+                )
+                emergency_payload = {
+                    'command':   'stop',
+                    'device_id': msg_device_id,
+                    'timestamp': int(time.time()),
+                    'reason':    'collision_prevention',
+                }
+                publish_command(msg_device_id, emergency_payload)
 
         logger.debug(f'[MQTT] Telemetry saved for device {msg_device_id!r}')
 
@@ -304,12 +326,18 @@ def publish_command(device_id: str, payload: dict) -> bool:
         logger.error('[MQTT] Client not initialized, call start_mqtt() first')
         return False
 
+    # 检查客户端连接状态
+    if not _client.is_connected():
+        logger.error(f'[MQTT] Client not connected! Cannot publish to cmd/{device_id}')
+        return False
+
     topic   = f'cmd/{device_id}'
     message = json.dumps(payload, ensure_ascii=False)
+    logger.info(f'[MQTT] Publishing to {topic}: {message}')
     result  = _client.publish(topic, message, qos=1)
 
     if result.rc == mqtt.MQTT_ERR_SUCCESS:
-        logger.info(f'[MQTT] Published to {topic}: {message}')
+        logger.info(f'[MQTT] Published OK to {topic}: {message}')
         return True
     else:
         logger.error(f'[MQTT] Publish to {topic} failed, rc={result.rc}')
@@ -364,18 +392,30 @@ def _process_heartbeat(device_id: str, raw_payload: bytes):
     """处理心跳消息，更新设备在线状态"""
     from src.extensions import db
     from src.models.device import Device
+    from src.utils.crypto_tool import xor_decrypt
     from flask import current_app
 
+    raw_str = raw_payload.decode('utf-8', errors='replace')
+
+    # 心跳数据可能是 XOR 加密的 (UNO 设备), 也可能是明文 JSON
     try:
-        data = json.loads(raw_payload)
-    except (json.JSONDecodeError, UnicodeDecodeError):
+        if raw_str.startswith('XOR:'):
+            xor_key = current_app.config.get('XOR_KEY',
+                       current_app.config.get('AES_KEY', b'SmartRover2026!!'))
+            plaintext = xor_decrypt(xor_key, raw_str)
+            data = json.loads(plaintext)
+        else:
+            data = json.loads(raw_str)
+    except (json.JSONDecodeError, UnicodeDecodeError, ValueError):
         return
 
-    device = Device.query.filter_by(device_id=device_id).first()
+    # 用 JSON 中的 device_id 或 topic 中的 device_id 查找设备
+    hb_device_id = data.get('device_id', device_id)
+    device = Device.query.filter_by(device_id=hb_device_id).first()
     if device:
         device.touch()
         try:
             db.session.commit()
         except Exception as exc:
             db.session.rollback()
-            logger.warning(f'[HB] Heartbeat update failed for {device_id!r}: {exc}')
+            logger.warning(f'[HB] Heartbeat update failed for {hb_device_id!r}: {exc}')

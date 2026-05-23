@@ -161,7 +161,7 @@ def xor_verify_checksum(secret: str, message: str, signature: str) -> bool:
     try:
         sig_buf = [0, 0, 0, 0]
         s_len = len(secret)
-        for i, ch in enumerate(message[:200]):
+        for i, ch in enumerate(message[:250]):
             sig_buf[i % 4] ^= ord(ch) ^ ord(secret[i % s_len])
 
         expected = ''.join(f'{b:02X}' for b in sig_buf)

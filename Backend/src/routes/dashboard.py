@@ -69,9 +69,20 @@ def get_stats():
     # 严重告警数 (replay + ddos)
     critical_count = audit_query.filter(SecurityAuditLog.event_type.in_(['replay', 'ddos'])).count()
 
-    # 碰撞预警：检查所有在线设备的最新超声波数据
-    collision_count = 0
+    # 安全指数：基于每台设备实际超声波距离的连续评分
+    # 距离 → 安全分映射: 5cm=0分, 50cm=31分, 150cm=100分
+    CRITICAL_DIST_CM = 5.0    # 视为碰撞 (0分)
+    SAFE_DIST_CM     = 150.0  # 完全安全 (100分)
+    DANGER_DIST_CM   = 30.0   # 危险阈值 (红色警告)
+
     online_device_ids = [d.device_id for d in device_query.filter_by(status='online').all()]
+    device_scores = []
+    ultrasonic_values = []
+    collision_count = 0
+    danger_count = 0
+    min_distance = None
+    min_distance_device = None
+
     for did in online_device_ids:
         latest = (
             TelemetryPoint.query
@@ -80,8 +91,22 @@ def get_stats():
             .first()
         )
         if latest and latest.ultrasonic_cm is not None:
-            if latest.ultrasonic_cm < ULTRASONIC_SAFE_DISTANCE_CM:
+            d = latest.ultrasonic_cm
+            ultrasonic_values.append(d)
+            if d < ULTRASONIC_SAFE_DISTANCE_CM:
                 collision_count += 1
+            if d < DANGER_DIST_CM:
+                danger_count += 1
+            if min_distance is None or d < min_distance:
+                min_distance = d
+                min_distance_device = did
+            # 连续评分: 距离在 CRITICAL~SAFE 之间线性映射到 0~100
+            score = max(0.0, min(100.0, (d - CRITICAL_DIST_CM) / (SAFE_DIST_CM - CRITICAL_DIST_CM) * 100.0))
+            device_scores.append(score)
+
+    # 总体安全指数 = 所有在线设备安全分的平均值 (没有设备则 100)
+    safety_index = round(sum(device_scores) / len(device_scores)) if device_scores else 100
+    avg_ultrasonic = round(sum(ultrasonic_values) / len(ultrasonic_values), 1) if ultrasonic_values else None
 
     # 最近 5 条告警日志
     recent_alerts = (
@@ -92,12 +117,17 @@ def get_stats():
     )
 
     return jsonify({
-        'total_devices':       total_devices,
-        'online_devices':      online_devices,
-        'offline_devices':     total_devices - online_devices,
-        'total_audit_logs':    total_audit,
-        'critical_alerts':     critical_count,
-        'collision_warnings':  collision_count,
-        'safe_distance_cm':    ULTRASONIC_SAFE_DISTANCE_CM,
-        'recent_alerts':       [a.to_dict() for a in recent_alerts],
+        'total_devices':        total_devices,
+        'online_devices':       online_devices,
+        'offline_devices':      total_devices - online_devices,
+        'total_audit_logs':     total_audit,
+        'critical_alerts':      critical_count,
+        'collision_warnings':   collision_count,
+        'safety_index':         safety_index,
+        'avg_ultrasonic_cm':    avg_ultrasonic,
+        'min_ultrasonic_cm':    round(min_distance, 1) if min_distance is not None else None,
+        'min_distance_device':  min_distance_device,
+        'danger_count':         danger_count,
+        'safe_distance_cm':     ULTRASONIC_SAFE_DISTANCE_CM,
+        'recent_alerts':        [a.to_dict() for a in recent_alerts],
     }), 200

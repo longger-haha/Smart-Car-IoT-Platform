@@ -55,6 +55,10 @@ def send_command():
     device_id = data.get('device_id', '').strip()
     command   = data.get('command',   '').strip().lower()
 
+    import logging
+    log = logging.getLogger(__name__)
+    log.info(f'[CMD] Received command request: device_id={device_id!r} command={command!r}')
+
     if not device_id:
         return jsonify({'error': 'device_id 不能为空'}), 400
     if command not in VALID_COMMANDS:
@@ -69,7 +73,10 @@ def send_command():
         'speed_pwm': data.get('speed_pwm', 150),
     }
 
+    log.info(f'[CMD] Calling publish_command: device_id={device_id!r} payload={payload}')
     success = publish_command(device_id, payload)
+    log.info(f'[CMD] publish_command result: {success}')
+
     if not success:
         return jsonify({'error': 'MQTT 发布失败'}), 503
 
@@ -207,6 +214,12 @@ def get_latest_position(device_id: str):
         return jsonify({'error': f'设备 {device_id!r} 暂无位置数据'}), 404
 
     result = point.to_dict()
+
+    # 附加设备在线状态
+    from src.models.device import Device
+    device = Device.query.filter_by(device_id=device_id).first()
+    result['device_online'] = device.status == 'online' if device else False
+    result['last_seen_at'] = device.last_seen_at.isoformat() if device and device.last_seen_at else None
 
     nav_info = _nav_status_cache.get(device_id)
     if nav_info:

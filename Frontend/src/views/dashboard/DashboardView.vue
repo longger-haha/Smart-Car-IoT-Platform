@@ -77,6 +77,18 @@
             <span>安全指标</span>
           </template>
           <div ref="gaugeChartRef" class="chart-container"></div>
+          <div class="safety-detail" v-if="stats.min_ultrasonic_cm != null">
+            <div class="safety-row">
+              <span class="safety-label">最近距离</span>
+              <span class="safety-value" :style="{ color: stats.min_ultrasonic_cm < 30 ? '#ef4444' : stats.min_ultrasonic_cm < 50 ? '#f59e0b' : '#10b981' }">
+                {{ stats.min_ultrasonic_cm }} cm
+              </span>
+            </div>
+            <div class="safety-row" v-if="stats.danger_count > 0">
+              <span class="safety-label">危险设备</span>
+              <span class="safety-value" style="color:#ef4444">{{ stats.danger_count }} 台</span>
+            </div>
+          </div>
         </el-card>
       </el-col>
     </el-row>
@@ -103,6 +115,7 @@
             <el-tag size="small" type="success">在线设备: {{ stats.online_devices ?? 0 }}</el-tag>
             <el-tag size="small">总设备数: {{ stats.total_devices ?? 0 }}</el-tag>
             <el-tag size="small" type="warning">告警: {{ stats.critical_alerts ?? 0 }}</el-tag>
+            <el-tag v-if="dashPositionData && dashPositionData.device_online === false" size="small" type="danger">设备离线</el-tag>
             <span v-if="dashPositionData" class="dash-pos-bar">
               {{ dashPositionData.lat?.toFixed(5) || '--' }}, {{ dashPositionData.lng?.toFixed(5) || '--' }}
               · PWM {{ dashPositionData.speed_pwm || '--' }}
@@ -213,6 +226,7 @@ let dashTrajectoryMap = null
 let dashPositionMarker = null
 let dashTrajectoryPolyline = null
 let dashPosTimer = null
+let dashPollInterval = 5000
 let dashRequestGen = 0  // 请求代次，防止切换设备时旧请求的响应覆盖新地图
 
 async function fetchStats() {
@@ -260,10 +274,7 @@ function renderGaugeChart() {
   if (!gaugeChartRef.value) return
   if (!gaugeChart) gaugeChart = echarts.init(gaugeChartRef.value)
 
-  const safeRate =
-    stats.total_devices > 0
-      ? Math.round(((stats.total_devices - stats.collision_warnings) / stats.total_devices) * 100)
-      : 100
+  const safeRate = stats.safety_index ?? 100
 
   gaugeChart.setOption({
     series: [
@@ -321,6 +332,20 @@ async function fetchDashPosition() {
   try {
     const res = await vehicleAPI.getPosition(dashDeviceId.value)
     dashPositionData.value = res
+    // 设备离线时降低轮询频率(30秒)，上线时恢复(5秒)
+    if (res.device_online === false) {
+      if (dashPosTimer && dashPollInterval !== 30000) {
+        stopDashPolling()
+        dashPollInterval = 30000
+        dashPosTimer = setInterval(() => { fetchDashPosition(); refreshDashTrajectory() }, dashPollInterval)
+      }
+    } else if (res.device_online === true) {
+      if (dashPosTimer && dashPollInterval !== 5000) {
+        stopDashPolling()
+        dashPollInterval = 5000
+        dashPosTimer = setInterval(() => { fetchDashPosition(); refreshDashTrajectory() }, dashPollInterval)
+      }
+    }
     drawDashPositionMarker(res)
   } catch (e) { console.error('获取设备位置失败', e) }
 }
@@ -417,7 +442,8 @@ function onDashDeviceChange(deviceId) {
 
 function startDashPolling() {
   stopDashPolling()
-  dashPosTimer = setInterval(() => { fetchDashPosition(); refreshDashTrajectory() }, 5000)
+  dashPollInterval = 5000
+  dashPosTimer = setInterval(() => { fetchDashPosition(); refreshDashTrajectory() }, dashPollInterval)
 }
 
 function stopDashPolling() {
@@ -532,7 +558,25 @@ onUnmounted(() => {
 
 .chart-container {
   width: 100%;
-  height: 320px;
+  height: 300px;
+}
+
+.safety-detail {
+  margin-top: 4px;
+  padding: 0 8px;
+}
+.safety-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 4px 0;
+  font-size: 13px;
+}
+.safety-label {
+  color: #64748b;
+}
+.safety-value {
+  font-weight: 600;
 }
 
 #dash-trajectory-map {
