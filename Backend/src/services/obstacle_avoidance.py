@@ -69,11 +69,8 @@ class ObstacleAvoidance:
         self._last_avoid_time = now
 
         if ir_l and not ir_r:
-            return {"cmd": "diff", "pwm_l": 180, "pwm_r": 80,
-                    "dur_ms": 800}
+            return {"cmd": "diff", "pwm_l": 180, "pwm_r": 80}
         elif ir_r and not ir_l:
-            return {"cmd": "diff", "pwm_l": 80, "pwm_r": 180,
-                    "dur_ms": 800}
+            return {"cmd": "diff", "pwm_l": 80, "pwm_r": 180}
         else:
-            return {"cmd": "diff", "pwm_l": -120, "pwm_r": -120,
-                    "dur_ms": 500}
+            return {"cmd": "diff", "pwm_l": -120, "pwm_r": -120}

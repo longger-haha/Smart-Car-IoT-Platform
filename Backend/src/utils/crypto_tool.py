@@ -139,7 +139,7 @@ def xor_decrypt(key: bytes, token: str) -> str:
         key_len = len(key)
         plain_bytes = bytes(xored[i] ^ key[i % key_len] for i in range(len(xored)))
 
-        return plain_bytes.decode('utf-8')
+        return plain_bytes.decode('utf-8', errors='replace')
     except Exception as e:
         raise ValueError(f'XOR decryption failed: {e}') from e
 

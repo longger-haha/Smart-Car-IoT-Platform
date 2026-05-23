@@ -1,33 +1,28 @@
-﻿/**
+/**
  * ═══════════════════════════════════════════════════════════════
- *  SmartRover UNO v4.0-Lite  (精简版 · 分批发送)
+ *  SmartRover UNO v5.0 (单板版 · 无GPS) — 调试版
  * ═══════════════════════════════════════════════════════════════
  *  硬件: Arduino UNO + ESP-01S + L293D Shield
- *  传感器: DHT11 + HC-SR04 + 红外x2 + MPU6050 + GPS
- *  通信: ESP-01S AT+MQTT, GPS 硬串口(Serial)
+ *  传感器: DHT11 + HC-SR04 + 红外x2 + MPU6050
+ *  通信: ESP-01S AT+MQTT
  *  加密: XOR + Base64
  *
- *  ★ MPU6050 用 A4/A5 硬件 I2C (Wire库, 省Flash ~1.5KB)
- *  ★ 红外改用 D9/D10 (数字输入)
- *  ★ 数据分三批发送, jsonBuf 只需 180B:
- *    批1: sensor/<id>     → 环境数据 (温湿度/超声波/红外)
- *    批2: sensor/<id>/imu → 6轴IMU数据
- *    批3: sensor/<id>/gps → GPS坐标
- *  ★ RAM: ~680B (原版 ~970B)
- *
  *  引脚分配:
- *    D0/D1   GPS 硬串口 (Serial)
- *    D9/D10  红外 左/右 (数字输入)
+ *    D0/D1   Serial (USB调试)
+ *    D9/D10  红外 左/右
  *    D13     DHT11
  *    A0/A1   HC-SR04 TRIG/ECHO
  *    A2/A3   ESP-01S SoftwareSerial RX/TX
  *    A4/A5   MPU6050 SDA/SCL (硬件I2C)
+ *    AFMotor: D3/D4/D5/D6/D7/D8/D11/D12
  *
- *  ⚠ GPS用硬串口时, Serial.println调试输出会发到GPS模块!
- *    开发调试时建议断开GPS的RX线
+ *  数据分两批发送:
+ *    批1: sensor/<id>     → 环境数据 (温湿度/超声波/红外)
+ *    批2: sensor/<id>/imu → 6轴IMU数据
  * ═══════════════════════════════════════════════════════════════
  */
 
+#define SS_MAX_RX_BUFF 48
 #include <AFMotor_R4.h>
 #include <SoftwareSerial.h>
 #include <Wire.h>
@@ -37,23 +32,27 @@
 //  一、配置区
 // ═══════════════════════════════════════════════════════════════
 
-const char WIFI_SSID[]     = "REDMI K80";
-const char WIFI_PASS[]     = "88888888";
+const char WIFI_SSID[] PROGMEM = "REDMI K80";
+const char WIFI_PASS[] PROGMEM = "88888888";
 
-const char MQTT_HOST[]     = "172.22.32.61";
-const int  MQTT_PORT       = 1883;
-const char MQTT_USER[]     = "";
-const char MQTT_PASS[]     = "";
+const char MQTT_HOST[] PROGMEM = "172.22.32.61";
+const int  MQTT_PORT           = 1883;
+const char MQTT_USER[] PROGMEM = "";
+const char MQTT_PASS[] PROGMEM = "";
 
-const char DEVICE_ID[]     = "smartrover_007";
+const char DEVICE_ID[] PROGMEM = "smartrover_007";
 
 const char DEVICE_SECRET[] PROGMEM =
   "1b8c58fbdc4be422633f61c357c7f3b4ba6b2d0b211e89c0a27771ad66449f48";
 const char XOR_KEY[] PROGMEM = "SmartRover2026!!";
 
-const unsigned long HEARTBEAT_MS   = 8000;
-const unsigned long TELEMETRY_MS   = 5000;
-const unsigned long CMD_TIMEOUT_MS = 15000;  // 指令超时自动停车 (3个遥测周期)
+// PROGMEM 字符串读取辅助
+char pBuf[40];  // 临时存放 PROGMEM 字符串, 使用后立即消费
+#define P2B(dst, src) do { strncpy_P(dst, src, sizeof(dst)-1); dst[sizeof(dst)-1]='\0'; } while(0)
+
+const unsigned long HEARTBEAT_MS   = 15000;
+const unsigned long TELEMETRY_MS   = 10000;
+const unsigned long CMD_TIMEOUT_MS = 15000;
 
 // ═══════════════════════════════════════════════════════════════
 //  二、引脚定义
@@ -63,10 +62,10 @@ const unsigned long CMD_TIMEOUT_MS = 15000;  // 指令超时自动停车 (3个�
 #define DHT_TYPE      DHT11
 #define TRIG_PIN      A0
 #define ECHO_PIN      A1
-#define IR_L_PIN      9    // 左红外 → D9
-#define IR_R_PIN      10   // 右红外 → D10
-#define ESP_RX_PIN    A2   // ESP-01S TX → UNO A2
-#define ESP_TX_PIN    A3   // UNO A3 → ESP-01S RX (需电阻分压!)
+#define IR_L_PIN      9
+#define IR_R_PIN      10
+#define ESP_RX_PIN    A2    // ESP-01S TX → UNO A2
+#define ESP_TX_PIN    A3    // UNO A3 → ESP-01S RX (需电阻分压!)
 
 // MPU6050 硬件 I2C (A4=SDA, A5=SCL)
 #define MPU_ADDR      0x68
@@ -96,24 +95,22 @@ int  speedPwm = 150;
 unsigned long lastCmdTime = 0;
 bool safetyStopped = false;
 
-float gyroZOff  = 0.0;
-
-float gpsLat = 0.0, gpsLng = 0.0, gpsAlt = 0.0, gpsSpd = 0.0;
-int  gpsSats = 0;
-bool gpsFix  = false;
-char nmeaBuf[80];
-int  nmeaIdx = 0;
+// MPU6050
+float gyroZOff = 0.0;
+float imuAx = 0, imuAy = 0, imuAz = 0;
+float imuGx = 0, imuGy = 0, imuGz = 0;
 
 unsigned long tTelemetry = 0;
 unsigned long tHeartbeat = 0;
 int  msgSeq = 0;
 
 // ═══════════════════════════════════════════════════════════════
-//  五、共享缓冲区 (分批发送后每条JSON更短, 缓冲区可缩小)
+//  五、共享缓冲区
 // ═══════════════════════════════════════════════════════════════
 
-char workBuf[150];   // AT响应 / MQTT指令
-char jsonBuf[180];   // JSON构造 (分批发送, 单条最长~150B)
+char workBuf[180];
+char jsonBuf[160];
+char fBuf[10];
 
 // ═══════════════════════════════════════════════════════════════
 //  六、流式 XOR+Base64
@@ -122,8 +119,6 @@ char jsonBuf[180];   // JSON构造 (分批发送, 单条最长~150B)
 static const char B64[] PROGMEM =
   "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
-// 流式 XOR+Base64: 直接输出到 espSerial, 无需 encBuf 缓冲区
-// 返回编码后的总字节数
 int streamXor(const char* plain, const char* keyP) {
   int pL = strlen(plain);
   int kL = strlen_P(keyP);
@@ -140,18 +135,17 @@ int streamXor(const char* plain, const char* keyP) {
     i += 3;
   }
   int b64Len = 4 * ((pL + 2) / 3);
-  return 4 + b64Len;  // "XOR:" + base64
+  return 4 + b64Len;
 }
 
-// 先计算 XOR+Base64 编码后的总长度 (不发送)
 int xorEncodedLen(const char* plain) {
   int pL = strlen(plain);
   int b64Len = 4 * ((pL + 2) / 3);
-  return 4 + b64Len;  // "XOR:" + base64
+  return 4 + b64Len;
 }
 
 // ═══════════════════════════════════════════════════════════════
-//  七、MPU6050 硬件 I2C (A4=SDA, A5=SCL, Wire库)
+//  七、MPU6050 硬件 I2C
 // ═══════════════════════════════════════════════════════════════
 
 void mpuWrite(uint8_t reg, uint8_t val) {
@@ -165,24 +159,24 @@ void mpuReadBurst(uint8_t reg, uint8_t* buf, uint8_t cnt) {
   Wire.beginTransmission(MPU_ADDR);
   Wire.write(reg);
   Wire.endTransmission(false);
-  Wire.requestFrom(MPU_ADDR, cnt);
+  Wire.requestFrom((uint8_t)MPU_ADDR, (uint8_t)cnt);
   for (uint8_t i = 0; i < cnt; i++) buf[i] = Wire.read();
 }
 
 void initMPU() {
   Wire.begin();
   delay(100);
-  mpuWrite(0x6B, 0x80);  // reset
+  mpuWrite(0x6B, 0x80);
   delay(100);
-  mpuWrite(0x6B, 0x03);  // PLL_Z, 唤醒
-  mpuWrite(0x1A, 0x03);  // DLPF 44Hz
-  mpuWrite(0x1B, 0x18);  // ±2000°/s
-  mpuWrite(0x1C, 0x00);  // ±2g
+  mpuWrite(0x6B, 0x03);
+  mpuWrite(0x1A, 0x03);
+  mpuWrite(0x1B, 0x18);
+  mpuWrite(0x1C, 0x00);
 
   Wire.beginTransmission(MPU_ADDR);
   Wire.write(0x75);
   Wire.endTransmission(false);
-  Wire.requestFrom(MPU_ADDR, 1);
+  Wire.requestFrom((uint8_t)MPU_ADDR, (uint8_t)1);
   uint8_t wai = Wire.read();
   if (wai == 0x68) Serial.println(F("[IMU] MPU6050 OK"));
   else { Serial.print(F("[IMU] WHO_AM_I=0x")); Serial.println(wai, HEX); }
@@ -200,90 +194,28 @@ void initMPU() {
   Serial.print(F("[IMU] gyroZOff=")); Serial.println(gyroZOff, 1);
 }
 
-// ═══════════════════════════════════════════════════════════════
-//  八、GPS 极简 NMEA 解析 (硬串口 Serial)
-// ═══════════════════════════════════════════════════════════════
+void readMPU() {
+  uint8_t buf[6];
+  mpuReadBurst(0x3B, buf, 6);
+  int16_t ax = (int16_t)((buf[0] << 8) | buf[1]);
+  int16_t ay = (int16_t)((buf[2] << 8) | buf[3]);
+  int16_t az = (int16_t)((buf[4] << 8) | buf[5]);
 
-float nmeaFloat(int idx) {
-  int fi = 0;
-  char* p = nmeaBuf;
-  while (fi < idx) {
-    char* c = strchr(p, ',');
-    if (!c) return 0.0;
-    p = c + 1;
-    fi++;
-  }
-  return atof(p);
-}
+  mpuReadBurst(0x43, buf, 6);
+  int16_t gx = (int16_t)((buf[0] << 8) | buf[1]);
+  int16_t gy = (int16_t)((buf[2] << 8) | buf[3]);
+  int16_t gz = (int16_t)((buf[4] << 8) | buf[5]);
 
-float nmeaCoord(int idx, int dirIdx) {
-  float raw = nmeaFloat(idx);
-  if (raw == 0.0) return 0.0;
-  int deg = (int)(raw / 100);
-  float min = raw - deg * 100;
-  float coord = deg + min / 60.0;
-  int fi = 0;
-  char* p = nmeaBuf;
-  while (fi < dirIdx) {
-    char* c = strchr(p, ',');
-    if (!c) return coord;
-    p = c + 1;
-    fi++;
-  }
-  if (*p == 'S' || *p == 'W') coord = -coord;
-  return coord;
-}
-
-char nmeaChar(int idx) {
-  int fi = 0;
-  char* p = nmeaBuf;
-  while (fi < idx) {
-    char* c = strchr(p, ',');
-    if (!c) return '\0';
-    p = c + 1;
-    fi++;
-  }
-  return *p;
-}
-
-void parseNMEA() {
-  if (strstr(nmeaBuf, "GPRMC") || strstr(nmeaBuf, "GNRMC")) {
-    char status = nmeaChar(2);
-    if (status == 'A') {
-      gpsLat = nmeaCoord(3, 4);
-      gpsLng = nmeaCoord(5, 6);
-      gpsSpd = nmeaFloat(7) * 1.852;
-      gpsFix = true;
-    } else {
-      gpsFix = false;
-    }
-  }
-  else if (strstr(nmeaBuf, "GPGGA") || strstr(nmeaBuf, "GNGGA")) {
-    int fixQ = (int)nmeaFloat(6);
-    if (fixQ > 0) {
-      gpsSats = (int)nmeaFloat(7);
-      gpsAlt = nmeaFloat(9);
-      gpsFix = true;
-    }
-  }
-}
-
-void readGPS() {
-  while (Serial.available()) {
-    char c = Serial.read();
-    if (c == '\n') {
-      nmeaBuf[nmeaIdx] = '\0';
-      if (nmeaIdx > 10) parseNMEA();
-      nmeaIdx = 0;
-    }
-    if (c >= ' ' && nmeaIdx < (int)sizeof(nmeaBuf) - 1) {
-      nmeaBuf[nmeaIdx++] = c;
-    }
-  }
+  imuAx = ax / 16384.0;
+  imuAy = ay / 16384.0;
+  imuAz = az / 16384.0;
+  imuGx = gx / 16.4;
+  imuGy = gy / 16.4;
+  imuGz = (gz - gyroZOff) / 16.4;
 }
 
 // ═══════════════════════════════════════════════════════════════
-//  九、ESP-01S AT+MQTT
+//  八、ESP-01S AT+MQTT (调试版: 逐波特率扫描+打印原始响应)
 // ═══════════════════════════════════════════════════════════════
 
 void readAT(unsigned long timeout = 2000) {
@@ -293,6 +225,22 @@ void readAT(unsigned long timeout = 2000) {
     while (espSerial.available()) {
       char c = espSerial.read();
       if (idx < (int)sizeof(workBuf) - 1) workBuf[idx++] = c;
+    }
+    // 收到完整响应后立即返回, 不等满超时
+    if (idx > 0) {
+      workBuf[idx] = '\0';
+      if (strstr(workBuf, "OK") || strstr(workBuf, "ERROR") ||
+          strstr(workBuf, "FAIL") || strstr(workBuf, ">")) {
+        // 再等一小段时间确保数据完整
+        unsigned long tw = millis();
+        while (millis() - tw < 50) {
+          while (espSerial.available()) {
+            if (idx < (int)sizeof(workBuf) - 1) workBuf[idx++] = espSerial.read();
+          }
+        }
+        workBuf[idx] = '\0';
+        break;
+      }
     }
   }
   workBuf[idx < (int)sizeof(workBuf) ? idx : (int)sizeof(workBuf) - 1] = '\0';
@@ -305,49 +253,116 @@ void sendAT(const char* cmd, unsigned long timeout = 2000) {
   readAT(timeout);
 }
 
+void sendAT_F(const __FlashStringHelper* cmd, unsigned long timeout = 2000) {
+  espSerial.println(cmd);
+  readAT(timeout);
+}
+
 bool initESP() {
   Serial.println(F("[ESP] init..."));
-  delay(1000);
+
+  // 第一步: 直接9600发AT (和测试代码一样, 不先RST)
   espSerial.begin(9600);
-  delay(300);
-  sendAT("AT", 2000);
-  if (atHas("OK")) {
-    Serial.println(F("[ESP] 9600 OK"));
-  } else {
-    espSerial.begin(115200);
-    delay(300);
-    sendAT("AT", 2000);
-    if (atHas("OK")) {
-      Serial.println(F("[ESP] 115200->9600"));
-      sendAT("AT+UART_CUR=9600,8,1,0,0", 2000);
-      delay(200);
-      espSerial.begin(9600);
+  delay(1000);
+  while (espSerial.available()) espSerial.read();
+  espSerial.println(F("AT"));
+  delay(1000);
+  int idx = 0;
+  while (espSerial.available() && idx < (int)sizeof(workBuf) - 1)
+    workBuf[idx++] = espSerial.read();
+  workBuf[idx] = '\0';
+  if (idx > 0) {
+    Serial.print(F("[ESP] raw@9600: ")); Serial.println(workBuf);
+  }
+
+  if (strstr(workBuf, "OK")) {
+    Serial.println(F("[ESP] found at 9600"));
+    goto esp_ok;
+  }
+
+  // 第二步: 尝试其他波特率
+  {
+    const long bauds[] = {115200L, 57600L, 38400L};
+    for (int b = 0; b < 3; b++) {
+      espSerial.begin(bauds[b]);
       delay(300);
-      sendAT("AT", 2000);
-      if (!atHas("OK")) { Serial.println(F("[ESP] fail")); return false; }
-    } else {
-      Serial.println(F("[ESP] no resp"));
-      return false;
+      while (espSerial.available()) espSerial.read();
+      espSerial.println(F("AT"));
+      delay(1500);
+      idx = 0;
+      while (espSerial.available() && idx < (int)sizeof(workBuf) - 1)
+        workBuf[idx++] = espSerial.read();
+      workBuf[idx] = '\0';
+      if (idx > 0) {
+        Serial.print(F("[ESP] raw@")); Serial.print(bauds[b]);
+        Serial.print(F(": ")); Serial.println(workBuf);
+      }
+      if (strstr(workBuf, "OK")) {
+        Serial.print(F("[ESP] found at ")); Serial.println(bauds[b]);
+        sendAT_F(F("AT+UART_CUR=9600,8,1,0,0"), 2000);
+        delay(200);
+        espSerial.begin(9600);
+        delay(300);
+        sendAT_F(F("AT"), 2000);
+        if (!atHas("OK")) { Serial.println(F("[ESP] baud switch fail")); return false; }
+        goto esp_ok;
+      }
     }
   }
-  sendAT("ATE0", 1000);
-  sendAT("AT+CWMODE=1", 2000);
+
+  // 第三步: 最后尝试RST
+  Serial.println(F("[ESP] trying RST..."));
+  espSerial.begin(9600);
+  delay(300);
+  while (espSerial.available()) espSerial.read();
+  espSerial.println(F("AT+RST"));
+  delay(5000);
+  while (espSerial.available()) espSerial.read();
+  delay(1000);
+
+  espSerial.println(F("AT"));
+  delay(1500);
+  idx = 0;
+  while (espSerial.available() && idx < (int)sizeof(workBuf) - 1)
+    workBuf[idx++] = espSerial.read();
+  workBuf[idx] = '\0';
+  if (idx > 0) {
+    Serial.print(F("[ESP] raw after RST: ")); Serial.println(workBuf);
+  }
+  if (strstr(workBuf, "OK")) {
+    Serial.println(F("[ESP] found after RST"));
+    goto esp_ok;
+  }
+
+  Serial.println(F("[ESP] no resp on any baud"));
+  return false;
+
+esp_ok:
+  sendAT_F(F("ATE0"), 1000);
+  sendAT_F(F("AT+CWMODE=1"), 2000);
   delay(500);
-  sendAT("AT+CIPMUX=0", 1000);
+  sendAT_F(F("AT+CIPMUX=0"), 1000);
+  sendAT_F(F("AT+MQTTDISC=0"), 1000);
+  sendAT_F(F("AT+MQTTUNSUB=0"), 1000);
   Serial.println(F("[ESP] ready"));
   return true;
 }
 
 bool connectWiFi() {
   if (!initESP()) return false;
-  Serial.print(F("[WiFi] ")); Serial.println(WIFI_SSID);
-  char cmd[100];
-  snprintf(cmd, sizeof(cmd), "AT+CWJAP=\"%s\",\"%s\"", WIFI_SSID, WIFI_PASS);
-  sendAT(cmd, 20000);
+  P2B(pBuf, WIFI_SSID);
+  Serial.print(F("[WiFi] ")); Serial.println(pBuf);
+  espSerial.print(F("AT+CWJAP=\""));
+  espSerial.print(pBuf);
+  espSerial.print(F("\",\""));
+  P2B(pBuf, WIFI_PASS);
+  espSerial.print(pBuf);
+  espSerial.println(F("\""));
+  readAT(20000);
   if (atHas("OK") || atHas("GOT IP")) {
     wifiOk = true;
     Serial.println(F("[WiFi] OK"));
-    sendAT("AT+CIFSR", 3000);
+    sendAT_F(F("AT+CIFSR"), 3000);
     char* ip = strstr(workBuf, "STAIP");
     if (ip) {
       char* q1 = strchr(ip, '"');
@@ -362,49 +377,54 @@ bool connectWiFi() {
 
 bool connectMQTT() {
   if (!wifiOk) return false;
-  Serial.print(F("[MQTT] ")); Serial.print(MQTT_HOST); Serial.print(F(":")); Serial.println(MQTT_PORT);
+  delay(1500);
+  P2B(pBuf, MQTT_HOST);
+  Serial.print(F("[MQTT] ")); Serial.print(pBuf); Serial.print(F(":")); Serial.println(MQTT_PORT);
 
-  char cfg[160];
-  snprintf(cfg, sizeof(cfg),
-    "AT+MQTTUSERCFG=0,1,\"%s\",\"%s\",\"%s\",0,0,\"\"",
-    DEVICE_ID, MQTT_USER, MQTT_PASS);
-  sendAT(cfg, 3000);
-  if (!atHas("OK")) { Serial.println(F("[MQTT] cfg fail")); return false; }
+  // 先断开已有 MQTT 连接
+  sendAT_F(F("AT+MQTTCLEAN=0"), 1000);
 
-  char conn[100];
-  snprintf(conn, sizeof(conn), "AT+MQTTCONN=0,\"%s\",%d,0", MQTT_HOST, MQTT_PORT);
-  sendAT(conn, 10000);
-  if (!atHas("OK")) { Serial.println(F("[MQTT] conn fail")); return false; }
+  // 用 jsonBuf 构建 AT 命令 (此时 jsonBuf 未被遥测使用)
+  P2B(pBuf, DEVICE_ID);
+  snprintf(jsonBuf, sizeof(jsonBuf),
+    "AT+MQTTUSERCFG=0,1,\"%s\",\"\",\"\",0,0,\"\"", pBuf);
+  sendAT(jsonBuf, 3000);
+  if (!atHas("OK")) {
+    Serial.print(F("[MQTT] USERCFG fail: ")); Serial.println(workBuf);
+    snprintf(jsonBuf, sizeof(jsonBuf),
+      "AT+MQTTUSERCFG=0,1,\"%s\"", pBuf);
+    sendAT(jsonBuf, 3000);
+  }
+  if (!atHas("OK")) {
+    Serial.print(F("[MQTT] USERCFG2 fail: ")); Serial.println(workBuf);
+    return false;
+  }
+  Serial.println(F("[MQTT] cfg OK"));
+
+  P2B(pBuf, MQTT_HOST);
+  snprintf(jsonBuf, sizeof(jsonBuf), "AT+MQTTCONN=0,\"%s\",%d,0", pBuf, MQTT_PORT);
+  sendAT(jsonBuf, 10000);
+  if (!atHas("OK")) { Serial.println(F("[MQTT] conn fail")); Serial.println(workBuf); return false; }
 
   mqttOk = true;
   Serial.println(F("[MQTT] OK"));
 
-  char sub[80];
-  snprintf(sub, sizeof(sub), "AT+MQTTSUB=0,\"cmd/%s\",1", DEVICE_ID);
-  sendAT(sub, 3000);
+  P2B(pBuf, DEVICE_ID);
+  snprintf(jsonBuf, sizeof(jsonBuf), "AT+MQTTSUB=0,\"cmd/%s\",1", pBuf);
+  sendAT(jsonBuf, 3000);
   if (atHas("OK")) Serial.println(F("[MQTT] sub OK"));
+  else { Serial.print(F("[MQTT] sub fail: ")); Serial.println(workBuf); }
 
   return true;
 }
 
-bool mqttPub(const char* topic, const char* payload) {
-  if (!mqttOk) return false;
-  espSerial.print(F("AT+MQTTPUB=0,\""));
-  espSerial.print(topic);
-  espSerial.print(F("\",\""));
-  espSerial.print(payload);
-  espSerial.println(F("\",0,0"));
-  readAT(5000);
-  bool ok = atHas("OK");
-  if (!ok) { Serial.print(F("[MQTT] pub fail: ")); Serial.println(workBuf); }
-  return ok;
-}
-
-// 用 PUBRAW 发送加密数据 (避免 payload 中的特殊字符破坏 AT 指令)
 bool mqttPubRaw(const char* topic, const char* jsonPlain, const char* keyP) {
   if (!mqttOk) return false;
 
   int dataLen = xorEncodedLen(jsonPlain);
+
+  Serial.print(F("[MQTT] PUBRAW topic=")); Serial.print(topic);
+  Serial.print(F(" len=")); Serial.println(dataLen);
 
   espSerial.print(F("AT+MQTTPUBRAW=0,\""));
   espSerial.print(topic);
@@ -412,7 +432,8 @@ bool mqttPubRaw(const char* topic, const char* jsonPlain, const char* keyP) {
   espSerial.print(dataLen);
   espSerial.println(F(",0,0"));
 
-  readAT(3000);
+  readAT(5000);
+  Serial.print(F("[MQTT] PUBRAW resp: ")); Serial.println(workBuf);
   if (!atHas(">")) {
     Serial.print(F("[MQTT] PUBRAW no >: ")); Serial.println(workBuf);
     return false;
@@ -438,7 +459,7 @@ bool checkMQTTMsg() {
   }
   workBuf[idx] = '\0';
 
-  char* recv = strstr(workBuf, "+MQTT_SUB_RECV:");
+  char* recv = strstr(workBuf, "+MQTTSUBRECV:");
   if (!recv) return false;
 
   char* jsonStart = strchr(recv, '{');
@@ -453,7 +474,7 @@ bool checkMQTTMsg() {
 }
 
 // ═══════════════════════════════════════════════════════════════
-//  十、传感器
+//  九、传感器
 // ═══════════════════════════════════════════════════════════════
 
 float readUltrasonic() {
@@ -474,7 +495,7 @@ void readIR() {
 }
 
 // ═══════════════════════════════════════════════════════════════
-//  十一、电机
+//  十、电机
 // ═══════════════════════════════════════════════════════════════
 
 void stopMotors() {
@@ -506,14 +527,11 @@ void rotL(int s) {
 void rotR(int s) {
   motorLF.setSpeed(s); motorLF.run(FORWARD);
   motorLB.setSpeed(s); motorLB.run(FORWARD);
-  motorRF.setSpeed(s); motorRF.run(BACKWARD);
+  motorRF.setSpeed(s); motorRB.run(BACKWARD);
   motorRB.setSpeed(s); motorRB.run(BACKWARD);
 }
 
-// 差速控制: 左右电机独立 PWM
-// pwm > 0: FORWARD, pwm < 0: BACKWARD, pwm = 0: RELEASE
 void diffDrive(int pwmL, int pwmR) {
-  // 左侧电机
   if (pwmL > 0) {
     motorLF.setSpeed(min(pwmL, 255)); motorLF.run(FORWARD);
     motorLB.setSpeed(min(pwmL, 255)); motorLB.run(FORWARD);
@@ -524,7 +542,6 @@ void diffDrive(int pwmL, int pwmR) {
   } else {
     motorLF.run(RELEASE); motorLB.run(RELEASE);
   }
-  // 右侧电机
   if (pwmR > 0) {
     motorRF.setSpeed(min(pwmR, 255)); motorRF.run(FORWARD);
     motorRB.setSpeed(min(pwmR, 255)); motorRB.run(FORWARD);
@@ -538,7 +555,7 @@ void diffDrive(int pwmL, int pwmR) {
 }
 
 // ═══════════════════════════════════════════════════════════════
-//  十二、指令解析 (支持 diff 差速指令)
+//  十一、指令解析
 // ═══════════════════════════════════════════════════════════════
 
 bool jsonStr(const char* key, char* out, int maxLen) {
@@ -582,11 +599,9 @@ void handleCommand() {
     jsonStr("cmd", cmd, sizeof(cmd));
   if (cmd[0] == '\0') return;
 
-  // 更新指令接收时间 (用于超时保护)
   lastCmdTime = millis();
   safetyStopped = false;
 
-  // 差速指令: 后端 PID 输出
   if (strcmp(cmd, "diff") == 0) {
     int pwmL = jsonInt("pwm_l", 0);
     int pwmR = jsonInt("pwm_r", 0);
@@ -596,14 +611,12 @@ void handleCommand() {
     return;
   }
 
-  // 简单指令 (手动控制, 保持兼容)
   char spdStr[8] = "";
   int spd = speedPwm;
   if (jsonStr("speed_pwm", spdStr, sizeof(spdStr))) {
     int v = atoi(spdStr);
     if (v > 0 && v <= 255) spd = v;
   }
-  // 也支持 "pwm" 字段
   if (jsonStr("pwm", spdStr, sizeof(spdStr))) {
     int v = atoi(spdStr);
     if (v > 0 && v <= 255) spd = v;
@@ -617,10 +630,8 @@ void handleCommand() {
 }
 
 // ═══════════════════════════════════════════════════════════════
-//  十三、遥测上报 (原始6轴IMU + 拆分红外 + 电池电压)
+//  十二、遥测上报
 // ═══════════════════════════════════════════════════════════════
-
-char fBuf[12];
 
 void addSignature(int& n) {
   uint8_t sig[4] = {0};
@@ -628,20 +639,27 @@ void addSignature(int& n) {
   int jLen = strlen(jsonBuf);
   for (int i = 0; i < jLen && i < 250; i++)
     sig[i % 4] ^= (uint8_t)jsonBuf[i] ^ pgm_read_byte(&DEVICE_SECRET[i % sLen]);
+  static const char HXC[] PROGMEM = "0123456789ABCDEF";
+  char hex[9];
+  for (int i = 0; i < 4; i++) {
+    hex[i*2]   = pgm_read_byte(&HXC[sig[i] >> 4]);
+    hex[i*2+1] = pgm_read_byte(&HXC[sig[i] & 0x0F]);
+  }
+  hex[8] = '\0';
   n += snprintf(jsonBuf + n, sizeof(jsonBuf) - n,
-    "\"signature\":\"%02X%02X%02X%02X\"}", sig[0], sig[1], sig[2], sig[3]);
+    "\"signature\":\"%s\"}", hex);
 }
 
-// ── 第一批: 环境数据 → sensor/<device_id> ──
 void sendTelemetry() {
   float temp = dht.readTemperature();
   float humi = dht.readHumidity();
   float usCm = readUltrasonic();
   readIR();
 
+  P2B(pBuf, DEVICE_ID);
   int n = 0;
   n += snprintf(jsonBuf + n, sizeof(jsonBuf) - n,
-    "{\"device_id\":\"%s\",", DEVICE_ID);
+    "{\"device_id\":\"%s\",", pBuf);
 
   if (!isnan(temp)) {
     dtostrf(temp, 1, 1, fBuf);
@@ -663,102 +681,59 @@ void sendTelemetry() {
     fBuf, irL ? 1 : 0, irR ? 1 : 0, speedPwm, msgSeq);
   addSignature(n);
 
-  char topic[40];
-  snprintf(topic, sizeof(topic), "sensor/%s", DEVICE_ID);
-  if (mqttPubRaw(topic, jsonBuf, XOR_KEY)) {
+  char tp[30]; snprintf(tp, sizeof(tp), "sensor/%s", pBuf);
+  if (mqttPubRaw(tp, jsonBuf, XOR_KEY)) {
     Serial.print(F("[ENV] OK seq=")); Serial.println(msgSeq);
   } else {
     Serial.println(F("[ENV] fail"));
   }
 }
 
-// ── 第二批: IMU数据 → sensor/<device_id>/imu ──
 void sendIMU() {
-  uint8_t buf[14];
-  mpuReadBurst(0x3B, buf, 14);
+  readMPU();
 
-  int16_t ax = (int16_t)((buf[0] << 8) | buf[1]);
-  int16_t ay = (int16_t)((buf[2] << 8) | buf[3]);
-  int16_t az = (int16_t)((buf[4] << 8) | buf[5]);
-  int16_t gx = (int16_t)((buf[8] << 8) | buf[9]);
-  int16_t gy = (int16_t)((buf[10] << 8) | buf[11]);
-  int16_t gz_raw = (int16_t)((buf[12] << 8) | buf[13]);
-
+  P2B(pBuf, DEVICE_ID);
   int n = 0;
   n += snprintf(jsonBuf + n, sizeof(jsonBuf) - n,
-    "{\"device_id\":\"%s\",", DEVICE_ID);
+    "{\"device_id\":\"%s\",", pBuf);
 
-  dtostrf(ax / 16384.0, 1, 2, fBuf);
+  dtostrf(imuAx, 1, 2, fBuf);
   n += snprintf(jsonBuf + n, sizeof(jsonBuf) - n, "\"imu_ax\":%s,", fBuf);
-  dtostrf(ay / 16384.0, 1, 2, fBuf);
+  dtostrf(imuAy, 1, 2, fBuf);
   n += snprintf(jsonBuf + n, sizeof(jsonBuf) - n, "\"imu_ay\":%s,", fBuf);
-  dtostrf(az / 16384.0, 1, 2, fBuf);
+  dtostrf(imuAz, 1, 2, fBuf);
   n += snprintf(jsonBuf + n, sizeof(jsonBuf) - n, "\"imu_az\":%s,", fBuf);
-  dtostrf(gx / 16.4, 1, 1, fBuf);
+  dtostrf(imuGx, 1, 1, fBuf);
   n += snprintf(jsonBuf + n, sizeof(jsonBuf) - n, "\"imu_gx\":%s,", fBuf);
-  dtostrf(gy / 16.4, 1, 1, fBuf);
+  dtostrf(imuGy, 1, 1, fBuf);
   n += snprintf(jsonBuf + n, sizeof(jsonBuf) - n, "\"imu_gy\":%s,", fBuf);
-  dtostrf((gz_raw - gyroZOff) / 16.4, 1, 1, fBuf);
+  dtostrf(imuGz, 1, 1, fBuf);
   n += snprintf(jsonBuf + n, sizeof(jsonBuf) - n, "\"imu_gz\":%s,", fBuf);
 
   n += snprintf(jsonBuf + n, sizeof(jsonBuf) - n, "\"seq\":%d,", msgSeq);
   addSignature(n);
 
-  char topic[50];
-  snprintf(topic, sizeof(topic), "sensor/%s/imu", DEVICE_ID);
-  if (mqttPubRaw(topic, jsonBuf, XOR_KEY)) {
-    Serial.print(F("[IMU] OK seq=")); Serial.println(msgSeq);
+  char tp[35]; snprintf(tp, sizeof(tp), "sensor/%s/imu", pBuf);
+  if (mqttPubRaw(tp, jsonBuf, XOR_KEY)) {
+    Serial.print(F("[IMU] OK seq=")); Serial.println(msgSeq++);
   } else {
     Serial.println(F("[IMU] fail"));
   }
 }
 
-// ── 第三批: GPS数据 → sensor/<device_id>/gps ──
-void sendGPS() {
-  int n = 0;
-  n += snprintf(jsonBuf + n, sizeof(jsonBuf) - n,
-    "{\"device_id\":\"%s\",", DEVICE_ID);
-
-  if (gpsFix) {
-    dtostrf(gpsLat, 1, 6, fBuf);
-    n += snprintf(jsonBuf + n, sizeof(jsonBuf) - n, "\"latitude\":%s,", fBuf);
-    dtostrf(gpsLng, 1, 6, fBuf);
-    n += snprintf(jsonBuf + n, sizeof(jsonBuf) - n, "\"longitude\":%s,", fBuf);
-    dtostrf(gpsAlt, 1, 1, fBuf);
-    n += snprintf(jsonBuf + n, sizeof(jsonBuf) - n, "\"altitude\":%s,", fBuf);
-    dtostrf(gpsSpd, 1, 1, fBuf);
-    n += snprintf(jsonBuf + n, sizeof(jsonBuf) - n, "\"speed_kmh\":%s,", fBuf);
-    n += snprintf(jsonBuf + n, sizeof(jsonBuf) - n, "\"satellites\":%d,", gpsSats);
-  } else {
-    n += snprintf(jsonBuf + n, sizeof(jsonBuf) - n,
-      "\"latitude\":null,\"longitude\":null,");
-  }
-
-  n += snprintf(jsonBuf + n, sizeof(jsonBuf) - n, "\"seq\":%d,", msgSeq);
-  addSignature(n);
-
-  char topic[50];
-  snprintf(topic, sizeof(topic), "sensor/%s/gps", DEVICE_ID);
-  if (mqttPubRaw(topic, jsonBuf, XOR_KEY)) {
-    Serial.print(F("[GPS] OK seq=")); Serial.println(msgSeq++);
-  } else {
-    Serial.println(F("[GPS] fail"));
-  }
-}
-
 // ═══════════════════════════════════════════════════════════════
-//  十四、心跳
+//  十三、心跳
 // ═══════════════════════════════════════════════════════════════
 
 void sendHeartbeat() {
+  P2B(pBuf, DEVICE_ID);
   snprintf(jsonBuf, sizeof(jsonBuf),
     "{\"device_id\":\"%s\",\"uptime_s\":%lu,\"wifi\":%s,\"mqtt\":%s}",
-    DEVICE_ID, millis() / 1000,
+    pBuf, millis() / 1000,
     wifiOk ? "true" : "false", mqttOk ? "true" : "false");
 
-  char topic[64];
-  snprintf(topic, sizeof(topic), "heartbeat/%s", DEVICE_ID);
-  if (mqttPubRaw(topic, jsonBuf, XOR_KEY)) {
+  char tp[35]; snprintf(tp, sizeof(tp), "heartbeat/%s", pBuf);
+  if (mqttPubRaw(tp, jsonBuf, XOR_KEY)) {
     Serial.println(F("[HB] OK"));
   } else {
     Serial.println(F("[HB] fail"));
@@ -766,14 +741,12 @@ void sendHeartbeat() {
 }
 
 // ═══════════════════════════════════════════════════════════════
-//  十五、安全保护: 指令超时自动停车
+//  十四、安全保护
 // ═══════════════════════════════════════════════════════════════
 
 void checkCmdTimeout() {
-  // 仅在收到过指令后才启动超时检测
   if (lastCmdTime == 0) return;
   if (safetyStopped) return;
-
   if (millis() - lastCmdTime > CMD_TIMEOUT_MS) {
     stopMotors();
     safetyStopped = true;
@@ -782,7 +755,7 @@ void checkCmdTimeout() {
 }
 
 // ═══════════════════════════════════════════════════════════════
-//  十六、内存
+//  十五、内存
 // ═══════════════════════════════════════════════════════════════
 
 int freeRAM() {
@@ -792,14 +765,14 @@ int freeRAM() {
 }
 
 // ═══════════════════════════════════════════════════════════════
-//  十七、主程序
+//  十六、主程序
 // ═══════════════════════════════════════════════════════════════
 
 void setup() {
   Serial.begin(9600);
   delay(500);
 
-  Serial.println(F("SmartRover UNO v4.0-Lite"));
+  Serial.println(F("SmartRover UNO v5.0 (调试版)"));
 
   pinMode(TRIG_PIN, OUTPUT);
   pinMode(ECHO_PIN, INPUT);
@@ -807,10 +780,8 @@ void setup() {
   pinMode(IR_R_PIN, INPUT);
   dht.begin();
 
-  stopMotors();
-
   initMPU();
-  Serial.println(F("[INIT] GPS on Serial"));
+  stopMotors();
 
   Serial.println(F("[NET] connecting..."));
   if (connectWiFi()) connectMQTT();
@@ -822,16 +793,19 @@ void setup() {
 void loop() {
   unsigned long now = millis();
 
-  readGPS();
-
   handleCommand();
   checkCmdTimeout();
 
   if (now - tTelemetry > TELEMETRY_MS) {
     sendTelemetry();
-    sendIMU();
-    sendGPS();
     tTelemetry = now;
+  }
+
+  // IMU 在遥测后 2 秒发送，避免连续两次 mqttPubRaw
+  static unsigned long tIMU = 0;
+  if (now - tIMU > TELEMETRY_MS + 2000) {
+    sendIMU();
+    tIMU = now;
   }
 
   if (now - tHeartbeat > HEARTBEAT_MS) { sendHeartbeat(); tHeartbeat = now; }

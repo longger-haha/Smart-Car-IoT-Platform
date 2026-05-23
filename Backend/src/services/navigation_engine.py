@@ -169,16 +169,17 @@ class NavigationEngine:
                     f'device={device_id}')
             return
 
-        # 3. 避障检查 (优先级最高)
-        avoid_cmd = self._check_obstacle(ctx, data)
-        if avoid_cmd:
-            if ctx.state == NavState.CRUISING:
-                ctx.state = NavState.OBSTACLE_AVOID
-            self._publish(device_id, avoid_cmd)
-            return
-        else:
-            if ctx.state == NavState.OBSTACLE_AVOID:
-                ctx.state = NavState.CRUISING
+        # 3. 避障检查 (仅在巡航状态下生效, IDLE 时不干预手动控制)
+        if ctx.state != NavState.IDLE:
+            avoid_cmd = self._check_obstacle(ctx, data)
+            if avoid_cmd:
+                if ctx.state == NavState.CRUISING:
+                    ctx.state = NavState.OBSTACLE_AVOID
+                self._publish(device_id, avoid_cmd)
+                return
+            else:
+                if ctx.state == NavState.OBSTACLE_AVOID:
+                    ctx.state = NavState.CRUISING
 
         # 4. 巡航决策
         if ctx.state == NavState.CRUISING:
@@ -286,7 +287,6 @@ class NavigationEngine:
             "cmd": "diff",
             "pwm_l": pwm_l,
             "pwm_r": pwm_r,
-            "dur_ms": 0,
         }
 
         self._publish(device_id, cmd)

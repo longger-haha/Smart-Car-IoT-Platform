@@ -61,9 +61,10 @@ def _on_message(client, userdata, msg):
     logger.info(f'[MQTT] RECV topic={topic!r} len={len(payload)} '
                 f'preview={payload[:80]}')
 
-    parts     = topic.split('/', 1)
+    parts      = topic.split('/')
     topic_type = parts[0] if len(parts) > 1 else 'unknown'
-    device_id = parts[1] if len(parts) > 1 else 'unknown'
+    device_id  = parts[1] if len(parts) > 1 else 'unknown'
+    sub_type   = parts[2] if len(parts) > 2 else None
 
     if _flask_app is None:
         logger.error("[MQTT] _flask_app is None, cannot process message")
@@ -71,7 +72,7 @@ def _on_message(client, userdata, msg):
 
     with _flask_app.app_context():
         if topic_type == 'sensor':
-            _process_telemetry(device_id, payload)
+            _process_telemetry(device_id, payload, sub_type)
         elif topic_type == 'heartbeat':
             _process_heartbeat(device_id, payload)
         else:
@@ -88,8 +89,11 @@ def _get_device_owner_id(device_id: str):
         return None
 
 
-def _process_telemetry(device_id: str, raw_payload: bytes):
-    """在 Flask 应用上下文中处理消息，写入数据库"""
+def _process_telemetry(device_id: str, raw_payload: bytes, sub_type: str = None):
+    """在 Flask 应用上下文中处理消息，写入数据库
+
+    sub_type: None 表示主遥测 (sensor/<id>), 'imu'/'gps' 表示子主题
+    """
     from src.extensions import db
     from src.models.device import Device
     from src.models.telemetry import TelemetryPoint
@@ -100,6 +104,7 @@ def _process_telemetry(device_id: str, raw_payload: bytes):
 
     # 记录原始密文（供审计展示）
     raw_ciphertext = raw_payload.decode('utf-8', errors='replace')
+    logger.info(f'[MQTT] raw_payload for {device_id!r}: {raw_ciphertext!r}')
 
     try:
         # ── 1. 解密 (AES 优先, 失败后尝试 XOR 轻量解密) ─────────────
@@ -111,15 +116,19 @@ def _process_telemetry(device_id: str, raw_payload: bytes):
         try:
             plaintext = aes_decrypt(aes_key, raw_ciphertext)
             encrypt_type = 'aes'
-        except ValueError:
+        except ValueError as aes_err:
             # AES 解密失败, 尝试 XOR 解密 (UNO 设备)
             try:
                 plaintext = xor_decrypt(xor_key, raw_ciphertext)
                 encrypt_type = 'xor'
                 logger.info(f'[MQTT] XOR decrypt OK for device_id={device_id!r}')
-            except ValueError:
+            except ValueError as xor_err:
                 # 两种解密都失败
-                logger.warning(f'[MQTT] Both AES and XOR decrypt failed for device_id={device_id!r}')
+                logger.warning(
+                    f'[MQTT] Both AES and XOR decrypt failed for device_id={device_id!r} '
+                    f'aes_err={aes_err!s} xor_err={xor_err!s} '
+                    f'raw_len={len(raw_ciphertext)} raw_start={raw_ciphertext[:40]!r}'
+                )
                 SecurityAuditLog.record(
                     event_type='auth_fail',
                     target_device_id=device_id,
@@ -204,7 +213,31 @@ def _process_telemetry(device_id: str, raw_payload: bytes):
         else:
             logger.debug(f'[MQTT] No signature field, skipping check for {msg_device_id!r}')
 
-        # ── 5. 写入遥测数据 ───────────────────────────────────────────
+        # ── 5. IMU/GPS 子主题: 合并到最近的遥测记录 ──────────────────
+        if sub_type in ('imu', 'gps'):
+            recent = TelemetryPoint.query.filter_by(device_id=msg_device_id)\
+                .order_by(TelemetryPoint.recorded_at.desc()).first()
+            if recent and (datetime.now() - recent.recorded_at).total_seconds() < 30:
+                if sub_type == 'imu':
+                    recent.imu_ax = data.get('imu_ax')
+                    recent.imu_ay = data.get('imu_ay')
+                    recent.imu_az = data.get('imu_az')
+                    recent.imu_gx = data.get('imu_gx')
+                    recent.imu_gy = data.get('imu_gy')
+                    recent.imu_gz = data.get('imu_gz')
+                elif sub_type == 'gps':
+                    recent.latitude  = data.get('latitude')
+                    recent.longitude = data.get('longitude')
+                    recent.altitude  = data.get('altitude')
+                    recent.speed_kmh = data.get('speed_kmh')
+                    recent.satellites = data.get('satellites')
+                device.touch()
+                db.session.commit()
+                logger.debug(f'[MQTT] Merged {sub_type} into recent telemetry for {msg_device_id!r}')
+                return
+            # 没有最近的记录可合并, 继续创建新记录
+
+        # ── 6. 写入遥测数据 ───────────────────────────────────────────
         # 兼容新旧遥测格式:
         #   旧: ir_obstacle(bool), imu_heading, imu_gyro_z
         #   新: ir_l/ir_r(int), imu_ax/ay/az, imu_gx/gy/gz, bat_mv, seq

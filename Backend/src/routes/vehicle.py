@@ -55,18 +55,13 @@ def send_command():
     # diff 差速指令: 由前端或导航引擎下发
     if command == 'diff':
         payload = {
-            'cmd':       'diff',
-            'device_id': device_id,
-            'timestamp': int(time.time()),
-            'pwm_l':     data.get('pwm_l', 0),
-            'pwm_r':     data.get('pwm_r', 0),
-            'dur_ms':    data.get('dur_ms', 0),
+            'cmd':   'diff',
+            'pwm_l': data.get('pwm_l', 0),
+            'pwm_r': data.get('pwm_r', 0),
         }
     else:
         payload = {
             'command':   command,
-            'device_id': device_id,
-            'timestamp': int(time.time()),
             'speed_pwm': data.get('speed_pwm', 150),
         }
 
