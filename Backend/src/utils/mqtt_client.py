@@ -72,8 +72,6 @@ def _on_message(client, userdata, msg):
     with _flask_app.app_context():
         if topic_type == 'sensor':
             _process_telemetry(device_id, payload)
-        elif topic_type == 'nav':
-            _process_nav_event(device_id, payload)
         elif topic_type == 'heartbeat':
             _process_heartbeat(device_id, payload)
         else:
@@ -207,6 +205,17 @@ def _process_telemetry(device_id: str, raw_payload: bytes):
             logger.debug(f'[MQTT] No signature field, skipping check for {msg_device_id!r}')
 
         # ── 5. 写入遥测数据 ───────────────────────────────────────────
+        # 兼容新旧遥测格式:
+        #   旧: ir_obstacle(bool), imu_heading, imu_gyro_z
+        #   新: ir_l/ir_r(int), imu_ax/ay/az, imu_gx/gy/gz, bat_mv, seq
+        ir_l = data.get('ir_l')
+        ir_r = data.get('ir_r')
+        ir_obstacle = data.get('ir_obstacle')
+        if ir_l is not None or ir_r is not None:
+            ir_obstacle_val = bool(ir_l or ir_r)
+        else:
+            ir_obstacle_val = ir_obstacle
+
         point = TelemetryPoint(
             device_id      = msg_device_id,
             latitude       = data.get('latitude'),
@@ -214,13 +223,23 @@ def _process_telemetry(device_id: str, raw_payload: bytes):
             temperature    = data.get('temperature'),
             humidity       = data.get('humidity'),
             ultrasonic_cm  = data.get('ultrasonic_cm'),
-            ir_obstacle    = data.get('ir_obstacle'),
+            ir_obstacle    = ir_obstacle_val,
+            ir_l           = ir_l,
+            ir_r           = ir_r,
             imu_heading    = data.get('imu_heading'),
             imu_gyro_z     = data.get('imu_gyro_z'),
+            imu_ax         = data.get('imu_ax'),
+            imu_ay         = data.get('imu_ay'),
+            imu_az         = data.get('imu_az'),
+            imu_gx         = data.get('imu_gx'),
+            imu_gy         = data.get('imu_gy'),
+            imu_gz         = data.get('imu_gz'),
             speed_pwm      = data.get('speed_pwm'),
             altitude       = data.get('altitude'),
             speed_kmh      = data.get('speed_kmh'),
             satellites     = data.get('satellites'),
+            bat_mv         = data.get('bat_mv'),
+            seq            = data.get('seq'),
             raw_ciphertext = raw_ciphertext,
             recorded_at    = datetime.now(),
         )
@@ -230,31 +249,12 @@ def _process_telemetry(device_id: str, raw_payload: bytes):
         device.touch()
         db.session.commit()
 
-        # ── 7. 碰撞预防：超声波或红外检测到障碍 ──────────────────────
-        # 暂时禁用: 每次遥测都触发 stop 会淹没手动控制指令
-        # TODO: 改为节流 (每30秒最多发一次) 或由前端控制开关
-        COLLISION_PREVENTION_ENABLED = False
-        if COLLISION_PREVENTION_ENABLED:
-            SAFE_DISTANCE_CM = 50
-            ultrasonic_val = data.get('ultrasonic_cm')
-            ir_val = data.get('ir_obstacle')
-            collision_detected = (
-                (ultrasonic_val is not None and ultrasonic_val < SAFE_DISTANCE_CM) or
-                (ir_val is True)
-            )
-            if collision_detected:
-                logger.warning(
-                    f'[MQTT] ⚠️ COLLISION WARNING: device={msg_device_id!r} '
-                    f'ultrasonic={ultrasonic_val}cm < {SAFE_DISTANCE_CM}cm — '
-                    f'sending emergency STOP command'
-                )
-                emergency_payload = {
-                    'command':   'stop',
-                    'device_id': msg_device_id,
-                    'timestamp': int(time.time()),
-                    'reason':    'collision_prevention',
-                }
-                publish_command(msg_device_id, emergency_payload)
+        # ── 7. 触发导航决策引擎 ──────────────────────────────────────
+        try:
+            from src.services.navigation_engine import nav_engine
+            nav_engine.on_telemetry(msg_device_id, data)
+        except Exception as nav_exc:
+            logger.debug(f'[NAV] Engine error for {msg_device_id!r}: {nav_exc}')
 
         logger.debug(f'[MQTT] Telemetry saved for device {msg_device_id!r}')
 
@@ -342,50 +342,6 @@ def publish_command(device_id: str, payload: dict) -> bool:
     else:
         logger.error(f'[MQTT] Publish to {topic} failed, rc={result.rc}')
         return False
-
-
-def _process_nav_event(device_id: str, raw_payload: bytes):
-    """处理导航事件消息，写入 navigation_events 表"""
-    from src.extensions import db
-    from src.models.navigation_event import NavigationEvent
-    from flask import current_app
-    from datetime import datetime
-
-    try:
-        data = json.loads(raw_payload)
-    except (json.JSONDecodeError, UnicodeDecodeError):
-        logger.warning(f'[NAV] JSON parse failed for device={device_id!r}')
-        return
-
-    event = NavigationEvent(
-        device_id   = data.get('device_id', device_id),
-        event_type  = data.get('event_type', 'UNKNOWN')[:32],
-        detail      = data.get('detail', ''),
-        lat         = data.get('lat'),
-        lng         = data.get('lng'),
-        wp_index    = data.get('wp_index'),
-        wp_total    = data.get('wp_total'),
-        state       = data.get('state'),
-        occurred_at = datetime.now(),
-    )
-    db.session.add(event)
-
-    try:
-        db.session.commit()
-        logger.info(
-            f'[NAV] Event recorded: device={device_id!r} type={event.event_type!r} '
-            f'detail={event.detail!r}'
-        )
-    except Exception as exc:
-        db.session.rollback()
-        logger.warning(f'[NAV] Failed to write nav event: {exc}')
-
-    from src.routes.vehicle import _nav_status_cache
-    if device_id in _nav_status_cache:
-        _nav_status_cache[device_id]['state'] = data.get('state', 'unknown')
-        wp_idx = data.get('wp_index')
-        if wp_idx is not None:
-            _nav_status_cache[device_id]['wp_index'] = wp_idx
 
 
 def _process_heartbeat(device_id: str, raw_payload: bytes):

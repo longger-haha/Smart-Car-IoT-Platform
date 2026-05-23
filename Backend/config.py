@@ -36,3 +36,16 @@ class Config:
     REPLAY_WINDOW_SECONDS = int(os.getenv('REPLAY_WINDOW_SECONDS', '30'))
     # AES 加密密钥（16 字节）
     AES_KEY = os.getenv('AES_KEY', 'SmartRover2026!!').encode('utf-8')[:16]
+
+    # ── 导航引擎参数 ────────────────────────────────────────────
+    NAV_PID_KP           = float(os.getenv('NAV_PID_KP', '2.5'))
+    NAV_PID_KI           = float(os.getenv('NAV_PID_KI', '0.02'))
+    NAV_PID_KD           = float(os.getenv('NAV_PID_KD', '0.8'))
+    NAV_PID_OUTPUT_LIMIT = float(os.getenv('NAV_PID_OUTPUT_LIMIT', '120.0'))
+    NAV_BASE_CRUISE_PWM  = int(os.getenv('NAV_BASE_CRUISE_PWM', '160'))
+    NAV_ARRIVAL_RADIUS_M = float(os.getenv('NAV_ARRIVAL_RADIUS_M', '3.0'))
+    NAV_COMMAND_INTERVAL = float(os.getenv('NAV_COMMAND_INTERVAL', '1.0'))
+    NAV_LOW_BATTERY_MV   = int(os.getenv('NAV_LOW_BATTERY_MV', '10500'))
+    NAV_CRIT_BATTERY_MV  = int(os.getenv('NAV_CRIT_BATTERY_MV', '10000'))
+    NAV_SAFE_DISTANCE_CM = float(os.getenv('NAV_SAFE_DISTANCE_CM', '50.0'))
+    NAV_CRIT_DISTANCE_CM = float(os.getenv('NAV_CRIT_DISTANCE_CM', '20.0'))

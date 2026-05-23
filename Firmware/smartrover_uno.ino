@@ -1,18 +1,17 @@
 /**
  * ═══════════════════════════════════════════════════════════════
- *  SmartRover UNO v3.2  (XOR加密 · 双红外 · MPU6050 · GPS)
+ *  SmartRover UNO v4.0  (瘦客户端 · 后端算法中心化)
  * ═══════════════════════════════════════════════════════════════
  *  硬件: Arduino UNO + ESP-01S + L293D Shield
  *  传感器: DHT11 + HC-SR04 + 红外x2(左/右) + MPU6050 + GPS
  *  通信: ESP-01S AT+MQTT, GPS 硬串口(Serial)
  *  加密: XOR + Base64
  *
- *  ★ 零 String, 全部 char[] + snprintf
- *  ★ 流式 XOR+Base64, 无中间缓冲
- *  ★ 共享 workBuf 互斥复用
- *  ★ 大字符串 PROGMEM
- *  ★ MPU6050 手动 bit-bang I2C (D9/D10)
- *  ★ GPS 硬串口 (Serial, D0/D1)
+ *  ★ 本固件只负责: 传感器采集 + 电机执行 + 通信
+ *  ★ 所有算法(PID/导航/避障/IMU融合)在后端执行
+ *  ★ 传感器数据以 JSON 格式上报原始值
+ *  ★ 支持差速指令 diff: {pwm_l, pwm_r}
+ *  ★ 心跳超时自动停车保护
  *
  *  引脚分配:
  *    D0/D1   GPS 硬串口 (Serial)
@@ -54,8 +53,9 @@ const char DEVICE_SECRET[] PROGMEM =
   "72d579dd57432ef9c9614b1261a0a5ca3de4e8d0135f961b8c826f576b65f21f";
 const char XOR_KEY[] PROGMEM = "SmartRover2026!!";
 
-const unsigned long HEARTBEAT_MS  = 8000;
-const unsigned long TELEMETRY_MS  = 5000;
+const unsigned long HEARTBEAT_MS   = 8000;
+const unsigned long TELEMETRY_MS   = 5000;
+const unsigned long CMD_TIMEOUT_MS = 15000;  // 指令超时自动停车 (3个遥测周期)
 
 // ═══════════════════════════════════════════════════════════════
 //  二、引脚定义
@@ -102,10 +102,13 @@ float usCm    = 999.0;
 bool hasPendingCmd = false;
 char pendingCmd[120];
 
+// 指令超时保护
+unsigned long lastCmdTime = 0;
+bool safetyStopped = false;
+
 #ifdef USE_MPU6050
-float imuHeading = 0.0;
+// 陀螺仪零偏 (仅用于校准, 不再积分航向)
 float gyroZOff  = 0.0;
-unsigned long tImu = 0;
 #endif
 
 #ifdef USE_GPS
@@ -126,7 +129,7 @@ int  msgSeq = 0;
 // ═══════════════════════════════════════════════════════════════
 
 char workBuf[200];   // AT响应 / MQTT指令
-char jsonBuf[280];   // JSON构造
+char jsonBuf[380];   // JSON构造 (增大: 6轴IMU数据比单heading更长)
 
 // ═══════════════════════════════════════════════════════════════
 //  六、流式 XOR+Base64
@@ -277,7 +280,7 @@ void initMPU() {
   if (wai == 0x68) Serial.println(F("[IMU] MPU6050 OK"));
   else { Serial.print(F("[IMU] WHO_AM_I=0x")); Serial.println(wai, HEX); }
 
-  // 校准: 200次采样取零偏
+  // 校准: 200次采样取零偏 (仅用于上报去零偏后的角速度)
   delay(500);
   int32_t gzSum = 0;
   int16_t g[3];
@@ -288,20 +291,6 @@ void initMPU() {
   }
   gyroZOff = gzSum / 200.0;
   Serial.print(F("[IMU] gyroZOff=")); Serial.println(gyroZOff, 1);
-  tImu = millis();
-}
-
-void updateIMU() {
-  int16_t g[3];
-  mpuReadBurst(0x43, g, 3);
-  float gz = (g[2] - gyroZOff) / 16.4;  // ±2000°/s → 16.4 LSB/°/s
-  unsigned long now = millis();
-  float dt = (now - tImu) / 1000.0;
-  if (dt > 0.5) dt = 0.02;
-  tImu = now;
-  imuHeading += gz * dt;
-  if (imuHeading < 0) imuHeading += 360.0;
-  if (imuHeading >= 360.0) imuHeading -= 360.0;
 }
 
 #endif // USE_MPU6050
@@ -312,8 +301,6 @@ void updateIMU() {
 
 #ifdef USE_GPS
 
-// 解析逗号分隔字段, 返回第fieldIdx个字段的浮点值
-// 直接在 nmeaBuf 中操作, 不分配额外内存
 float nmeaFloat(int idx) {
   int fi = 0;
   char* p = nmeaBuf;
@@ -326,14 +313,12 @@ float nmeaFloat(int idx) {
   return atof(p);
 }
 
-// 解析经纬度 (NMEA格式: ddmm.mmmm)
 float nmeaCoord(int idx, int dirIdx) {
   float raw = nmeaFloat(idx);
   if (raw == 0.0) return 0.0;
   int deg = (int)(raw / 100);
   float min = raw - deg * 100;
   float coord = deg + min / 60.0;
-  // 方向: S或W为负
   int fi = 0;
   char* p = nmeaBuf;
   while (fi < dirIdx) {
@@ -346,7 +331,6 @@ float nmeaCoord(int idx, int dirIdx) {
   return coord;
 }
 
-// 获取第idx个字段的首字符
 char nmeaChar(int idx) {
   int fi = 0;
   char* p = nmeaBuf;
@@ -534,30 +518,25 @@ bool mqttPub(const char* topic, const char* payload) {
 }
 
 // 用 PUBRAW 发送加密数据 (避免 payload 中的特殊字符破坏 AT 指令)
-// 步骤: 1) AT+MQTTPUBRAW=0,"topic",len,0,0  2) 等待 > 提示  3) 发送数据
 bool mqttPubRaw(const char* topic, const char* jsonPlain, const char* keyP) {
   if (!mqttOk) return false;
 
   int dataLen = xorEncodedLen(jsonPlain);
 
-  // 步骤1: 发送 PUBRAW 命令头
   espSerial.print(F("AT+MQTTPUBRAW=0,\""));
   espSerial.print(topic);
   espSerial.print(F("\","));
   espSerial.print(dataLen);
   espSerial.println(F(",0,0"));
 
-  // 步骤2: 等待 ">" 提示符
   readAT(3000);
   if (!atHas(">")) {
     Serial.print(F("[MQTT] PUBRAW no >: ")); Serial.println(workBuf);
     return false;
   }
 
-  // 步骤3: 发送 XOR 加密数据
   streamXor(jsonPlain, keyP);
 
-  // 步骤4: 等待发送结果
   readAT(5000);
   bool ok = atHas("OK");
   if (!ok) {
@@ -567,14 +546,12 @@ bool mqttPubRaw(const char* topic, const char* jsonPlain, const char* keyP) {
 }
 
 bool checkMQTTMsg() {
-  // 优先处理 readAT 暂存的指令
   if (hasPendingCmd) {
     memcpy(workBuf, pendingCmd, strlen(pendingCmd) + 1);
     hasPendingCmd = false;
     return true;
   }
 
-  // 直接从串口读取
   if (!espSerial.available()) return false;
   int idx = 0;
   unsigned long t0 = millis();
@@ -584,11 +561,9 @@ bool checkMQTTMsg() {
   }
   workBuf[idx] = '\0';
 
-  // 查找 +MQTT_SUB_RECV: 中的 JSON payload
   char* recv = strstr(workBuf, "+MQTT_SUB_RECV:");
   if (!recv) return false;
 
-  // 格式: +MQTT_SUB_RECV:0,"topic",len\r\n{...} 或 +MQTT_SUB_RECV:0,"topic",len,{...}
   char* jsonStart = strchr(recv, '{');
   if (!jsonStart) return false;
   char* jsonEnd = strrchr(jsonStart, '}');
@@ -658,8 +633,35 @@ void rotR(int s) {
   motorRB.setSpeed(s); motorRB.run(BACKWARD);
 }
 
+// 差速控制: 左右电机独立 PWM
+// pwm > 0: FORWARD, pwm < 0: BACKWARD, pwm = 0: RELEASE
+void diffDrive(int pwmL, int pwmR) {
+  // 左侧电机
+  if (pwmL > 0) {
+    motorLF.setSpeed(min(pwmL, 255)); motorLF.run(FORWARD);
+    motorLB.setSpeed(min(pwmL, 255)); motorLB.run(FORWARD);
+  } else if (pwmL < 0) {
+    int s = min(-pwmL, 255);
+    motorLF.setSpeed(s); motorLF.run(BACKWARD);
+    motorLB.setSpeed(s); motorLB.run(BACKWARD);
+  } else {
+    motorLF.run(RELEASE); motorLB.run(RELEASE);
+  }
+  // 右侧电机
+  if (pwmR > 0) {
+    motorRF.setSpeed(min(pwmR, 255)); motorRF.run(FORWARD);
+    motorRB.setSpeed(min(pwmR, 255)); motorRB.run(FORWARD);
+  } else if (pwmR < 0) {
+    int s = min(-pwmR, 255);
+    motorRF.setSpeed(s); motorRF.run(BACKWARD);
+    motorRB.setSpeed(s); motorRB.run(BACKWARD);
+  } else {
+    motorRF.run(RELEASE); motorRB.run(RELEASE);
+  }
+}
+
 // ═══════════════════════════════════════════════════════════════
-//  十二、指令解析
+//  十二、指令解析 (支持 diff 差速指令)
 // ═══════════════════════════════════════════════════════════════
 
 bool jsonStr(const char* key, char* out, int maxLen) {
@@ -688,19 +690,48 @@ bool jsonStr(const char* key, char* out, int maxLen) {
   return true;
 }
 
+int jsonInt(const char* key, int defaultVal = 0) {
+  char s[12] = "";
+  if (!jsonStr(key, s, sizeof(s))) return defaultVal;
+  return atoi(s);
+}
+
 void handleCommand() {
   if (!checkMQTTMsg()) return;
   Serial.print(F("[CMD] ")); Serial.println(workBuf);
+
   char cmd[20] = "";
   if (!jsonStr("command", cmd, sizeof(cmd)))
     jsonStr("cmd", cmd, sizeof(cmd));
   if (cmd[0] == '\0') return;
+
+  // 更新指令接收时间 (用于超时保护)
+  lastCmdTime = millis();
+  safetyStopped = false;
+
+  // 差速指令: 后端 PID 输出
+  if (strcmp(cmd, "diff") == 0) {
+    int pwmL = jsonInt("pwm_l", 0);
+    int pwmR = jsonInt("pwm_r", 0);
+    diffDrive(pwmL, pwmR);
+    Serial.print(F("[DIFF] L=")); Serial.print(pwmL);
+    Serial.print(F(" R=")); Serial.println(pwmR);
+    return;
+  }
+
+  // 简单指令 (手动控制, 保持兼容)
   char spdStr[8] = "";
   int spd = speedPwm;
   if (jsonStr("speed_pwm", spdStr, sizeof(spdStr))) {
     int v = atoi(spdStr);
     if (v > 0 && v <= 255) spd = v;
   }
+  // 也支持 "pwm" 字段
+  if (jsonStr("pwm", spdStr, sizeof(spdStr))) {
+    int v = atoi(spdStr);
+    if (v > 0 && v <= 255) spd = v;
+  }
+
   if (strcmp(cmd, "forward") == 0)       { speedPwm = spd; fwd(spd); }
   else if (strcmp(cmd, "backward") == 0)  { speedPwm = spd; bwd(spd); }
   else if (strcmp(cmd, "left") == 0)      { speedPwm = spd; rotL(spd); }
@@ -709,11 +740,10 @@ void handleCommand() {
 }
 
 // ═══════════════════════════════════════════════════════════════
-//  十三、遥测上报
+//  十三、遥测上报 (原始6轴IMU + 拆分红外 + 电池电压)
 // ═══════════════════════════════════════════════════════════════
 
-// Arduino UNO 的 snprintf 不支持 %f, 用 dtostrf 转换
-char fBuf[12];  // 浮点转字符串临时缓冲
+char fBuf[12];  // dtostrf 临时缓冲
 
 void sendTelemetry() {
   float temp = dht.readTemperature();
@@ -721,74 +751,86 @@ void sendTelemetry() {
   usCm = readUltrasonic();
   readIR();
 
-#ifdef USE_MPU6050
-  updateIMU();
-#endif
-
-#ifdef USE_GPS
-  readGPS();
-#endif
-
   int n = 0;
   n += snprintf(jsonBuf + n, sizeof(jsonBuf) - n,
     "{\"device_id\":\"%s\",", DEVICE_ID);
 
+  // 温度
+  if (!isnan(temp)) {
+    dtostrf(temp, 1, 1, fBuf);
+    n += snprintf(jsonBuf + n, sizeof(jsonBuf) - n, "\"temperature\":%s,", fBuf);
+  } else {
+    n += snprintf(jsonBuf + n, sizeof(jsonBuf) - n, "\"temperature\":null,");
+  }
+
+  // 湿度
+  if (!isnan(humi)) {
+    dtostrf(humi, 1, 1, fBuf);
+    n += snprintf(jsonBuf + n, sizeof(jsonBuf) - n, "\"humidity\":%s,", fBuf);
+  } else {
+    n += snprintf(jsonBuf + n, sizeof(jsonBuf) - n, "\"humidity\":null,");
+  }
+
+  // 超声波
+  dtostrf(usCm, 1, 1, fBuf);
+  n += snprintf(jsonBuf + n, sizeof(jsonBuf) - n,
+    "\"ultrasonic_cm\":%s,", fBuf);
+
+  // 红外 (拆分为左右, 后端判断避障方向)
+  n += snprintf(jsonBuf + n, sizeof(jsonBuf) - n,
+    "\"ir_l\":%d,\"ir_r\":%d,", irL ? 1 : 0, irR ? 1 : 0);
+
+#ifdef USE_MPU6050
+  // 原始6轴数据 (后端做互补滤波, 不再在UNO端积分航向)
+  int16_t accel[3], gyro[3];
+  mpuReadBurst(0x3B, accel, 3);  // 加速度计
+  mpuReadBurst(0x43, gyro, 3);   // 陀螺仪
+
+  float ax = accel[0] / 16384.0;  // ±2g
+  float ay = accel[1] / 16384.0;
+  float az = accel[2] / 16384.0;
+  float gx = (gyro[0]) / 16.4;   // ±2000°/s (不去零偏, 后端自己校准)
+  float gy = (gyro[1]) / 16.4;
+  float gz = (gyro[2] - gyroZOff) / 16.4;  // Z轴去零偏 (后端需要精确角速度)
+
+  dtostrf(ax, 1, 2, fBuf);
+  n += snprintf(jsonBuf + n, sizeof(jsonBuf) - n, "\"imu_ax\":%s,", fBuf);
+  dtostrf(ay, 1, 2, fBuf);
+  n += snprintf(jsonBuf + n, sizeof(jsonBuf) - n, "\"imu_ay\":%s,", fBuf);
+  dtostrf(az, 1, 2, fBuf);
+  n += snprintf(jsonBuf + n, sizeof(jsonBuf) - n, "\"imu_az\":%s,", fBuf);
+  dtostrf(gx, 1, 1, fBuf);
+  n += snprintf(jsonBuf + n, sizeof(jsonBuf) - n, "\"imu_gx\":%s,", fBuf);
+  dtostrf(gy, 1, 1, fBuf);
+  n += snprintf(jsonBuf + n, sizeof(jsonBuf) - n, "\"imu_gy\":%s,", fBuf);
+  dtostrf(gz, 1, 1, fBuf);
+  n += snprintf(jsonBuf + n, sizeof(jsonBuf) - n, "\"imu_gz\":%s,", fBuf);
+#endif
+
 #ifdef USE_GPS
+  // GPS 数据 (NMEA解析仍留在UNO, 减少上报数据量)
   if (gpsFix) {
-    dtostrf(gpsLat, 1, 4, fBuf);
-    n += snprintf(jsonBuf + n, sizeof(jsonBuf) - n,
-      "\"latitude\":%s,", fBuf);
-    dtostrf(gpsLng, 1, 4, fBuf);
-    n += snprintf(jsonBuf + n, sizeof(jsonBuf) - n,
-      "\"longitude\":%s,", fBuf);
+    dtostrf(gpsLat, 1, 6, fBuf);
+    n += snprintf(jsonBuf + n, sizeof(jsonBuf) - n, "\"latitude\":%s,", fBuf);
+    dtostrf(gpsLng, 1, 6, fBuf);
+    n += snprintf(jsonBuf + n, sizeof(jsonBuf) - n, "\"longitude\":%s,", fBuf);
+    dtostrf(gpsAlt, 1, 1, fBuf);
+    n += snprintf(jsonBuf + n, sizeof(jsonBuf) - n, "\"altitude\":%s,", fBuf);
+    dtostrf(gpsSpd, 1, 1, fBuf);
+    n += snprintf(jsonBuf + n, sizeof(jsonBuf) - n, "\"speed_kmh\":%s,", fBuf);
+    n += snprintf(jsonBuf + n, sizeof(jsonBuf) - n, "\"satellites\":%d,", gpsSats);
   } else
 #endif
     n += snprintf(jsonBuf + n, sizeof(jsonBuf) - n,
       "\"latitude\":null,\"longitude\":null,");
 
-  if (!isnan(temp)) {
-    dtostrf(temp, 1, 1, fBuf);
-    n += snprintf(jsonBuf + n, sizeof(jsonBuf) - n, "\"temperature\":%s,", fBuf);
-  } else
-    n += snprintf(jsonBuf + n, sizeof(jsonBuf) - n, "\"temperature\":null,");
-
-  if (!isnan(humi)) {
-    dtostrf(humi, 1, 1, fBuf);
-    n += snprintf(jsonBuf + n, sizeof(jsonBuf) - n, "\"humidity\":%s,", fBuf);
-  } else
-    n += snprintf(jsonBuf + n, sizeof(jsonBuf) - n, "\"humidity\":null,");
-
-  dtostrf(usCm, 1, 1, fBuf);
-  n += snprintf(jsonBuf + n, sizeof(jsonBuf) - n,
-    "\"ultrasonic_cm\":%s,", fBuf);
-
-  n += snprintf(jsonBuf + n, sizeof(jsonBuf) - n,
-    "\"ir_obstacle\":%s,", (irL || irR) ? "true" : "false");
-
-  n += snprintf(jsonBuf + n, sizeof(jsonBuf) - n,
-    "\"ir_left\":%s,\"ir_right\":%s,", irL ? "true" : "false", irR ? "true" : "false");
-
-#ifdef USE_MPU6050
-  dtostrf(imuHeading, 1, 1, fBuf);
-  n += snprintf(jsonBuf + n, sizeof(jsonBuf) - n,
-    "\"imu_heading\":%s,", fBuf);
-#endif
-
+  // 当前速度
   n += snprintf(jsonBuf + n, sizeof(jsonBuf) - n,
     "\"speed_pwm\":%d,", speedPwm);
 
-#ifdef USE_GPS
-  if (gpsFix) {
-    dtostrf(gpsAlt, 1, 1, fBuf);
-    n += snprintf(jsonBuf + n, sizeof(jsonBuf) - n,
-      "\"altitude\":%s,", fBuf);
-    dtostrf(gpsSpd, 1, 1, fBuf);
-    n += snprintf(jsonBuf + n, sizeof(jsonBuf) - n,
-      "\"speed_kmh\":%s,", fBuf);
-    n += snprintf(jsonBuf + n, sizeof(jsonBuf) - n,
-      "\"satellites\":%d,", gpsSats);
-  }
-#endif
+  // 消息序号 (后端检测丢包)
+  n += snprintf(jsonBuf + n, sizeof(jsonBuf) - n,
+    "\"seq\":%d,", msgSeq);
 
   // XOR 校验和签名
   uint8_t sig[5] = {0};
@@ -799,7 +841,7 @@ void sendTelemetry() {
   n += snprintf(jsonBuf + n, sizeof(jsonBuf) - n,
     "\"signature\":\"%02X%02X%02X%02X\"}", sig[0], sig[1], sig[2], sig[3]);
 
-  // 用 PUBRAW 发送 (payload 中的特殊字符不会破坏 AT 指令)
+  // 用 PUBRAW 发送 XOR 加密数据
   char topic[64];
   snprintf(topic, sizeof(topic), "sensor/%s", DEVICE_ID);
   if (mqttPubRaw(topic, jsonBuf, XOR_KEY)) {
@@ -819,7 +861,6 @@ void sendHeartbeat() {
     DEVICE_ID, millis() / 1000,
     wifiOk ? "true" : "false", mqttOk ? "true" : "false");
 
-  // 心跳也用 PUBRAW 发送 XOR 加密数据
   char topic[64];
   snprintf(topic, sizeof(topic), "heartbeat/%s", DEVICE_ID);
   if (mqttPubRaw(topic, jsonBuf, XOR_KEY)) {
@@ -830,26 +871,19 @@ void sendHeartbeat() {
 }
 
 // ═══════════════════════════════════════════════════════════════
-//  十五、智能避障 (超声波 + 双红外)
+//  十五、安全保护: 指令超时自动停车
 // ═══════════════════════════════════════════════════════════════
 
-void checkObstacle() {
-  usCm = readUltrasonic();
-  readIR();
+void checkCmdTimeout() {
+  // 仅在收到过指令后才启动超时检测
+  if (lastCmdTime == 0) return;
+  if (safetyStopped) return;
 
-  if (usCm < 20 && usCm > 0) {
+  if (millis() - lastCmdTime > CMD_TIMEOUT_MS) {
     stopMotors();
-    Serial.print(F("[OBS] ")); Serial.print(usCm, 1); Serial.println(F("cm"));
-    if (irL && !irR)       rotR(180);
-    else if (irR && !irL)  rotL(180);
-    else                   bwd(150);
-    delay(500);
-    stopMotors();
-    return;
+    safetyStopped = true;
+    Serial.println(F("[SAFETY] 指令超时, 自动停车"));
   }
-  if (irL && irR) { bwd(150); delay(400); stopMotors(); }
-  else if (irL)   { rotR(180); delay(300); stopMotors(); }
-  else if (irR)   { rotL(180); delay(300); stopMotors(); }
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -871,7 +905,7 @@ void setup() {
   delay(500);
 
   Serial.println(F("========================================"));
-  Serial.println(F(" SmartRover UNO v3.2 (full sensors)"));
+  Serial.println(F(" SmartRover UNO v4.0 (thin client)"));
   Serial.println(F("========================================"));
 
   pinMode(TRIG_PIN, OUTPUT);
@@ -889,9 +923,6 @@ void setup() {
 #endif
 
 #ifdef USE_GPS
-  // GPS 硬串口已通过 Serial 初始化 (9600)
-  // 注意: GPS的TX接UNO D0(RX), GPS的RX接UNO D1(TX)
-  // 调试时如果GPS连着, Serial.println会发到GPS模块
   Serial.println(F("[INIT] GPS on Serial (9600)"));
 #endif
 
@@ -910,15 +941,19 @@ void loop() {
   readGPS();
 #endif
 
+  // 处理下行指令
   handleCommand();
 
-  static unsigned long tObs = 0;
-  if (now - tObs > 300) { checkObstacle(); tObs = now; }
+  // 安全保护: 指令超时自动停车
+  checkCmdTimeout();
 
+  // 遥测上报
   if (now - tTelemetry > TELEMETRY_MS) { sendTelemetry(); tTelemetry = now; }
 
+  // 心跳
   if (now - tHeartbeat > HEARTBEAT_MS) { sendHeartbeat(); tHeartbeat = now; }
 
+  // 断线重连
   static unsigned long tReconn = 0;
   if (now - tReconn > 30000) {
     if (!wifiOk) { Serial.println(F("[NET] reWiFi")); connectWiFi(); }

@@ -61,24 +61,28 @@ export const vehicleAPI = {
       command,
       speed_pwm: speedPwm,
     }),
-  dispatchRoute: (deviceId, waypoints) =>
-    request.post('/vehicle/route', {
+  // 后端导航引擎巡航
+  startCruise: (deviceId, waypoints, speedPwm = 150) =>
+    request.post('/vehicle/cruise/start', {
       device_id: deviceId,
       waypoints,
+      speed_pwm: speedPwm,
     }),
-  getLastRoute: (deviceId) => request.get(`/vehicle/route/${deviceId}`),
+  stopCruise: (deviceId) =>
+    request.post('/vehicle/cruise/stop', {
+      device_id: deviceId,
+    }),
+  getCruiseStatus: (deviceId) => request.get(`/vehicle/cruise/status/${deviceId}`),
 
   getPosition: (deviceId) => request.get(`/vehicle/position/${deviceId}`),
   getNavEvents: (deviceId, eventType = null, limit = 50) =>
     request.get(`/vehicle/nav-events/${deviceId}`, {
       params: { event_type: eventType, limit },
     }),
-  getCruiseStatus: (deviceId) => request.get(`/vehicle/status/${deviceId}`),
   getTrajectory: (deviceId, hours = 1, limit = 500) =>
     request.get(`/vehicle/trajectory/${deviceId}`, {
       params: { hours, limit },
     }),
-  getRisk: (deviceId) => request.get(`/vehicle/risk/${deviceId}`),
 }
 
 export const auditAPI = {
