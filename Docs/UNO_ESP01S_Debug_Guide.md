@@ -194,6 +194,26 @@ docker compose build backend && docker compose up -d backend
 1. 缩短 `readAT` 超时：等 `>` 从 3s→2s，等 `OK` 从 5s→3s
 2. 在 `sendTelemetry()` 和 `sendHeartbeat()` 之后立即调用 `handleCommand()`
 3. `loop()` 末尾 `delay` 从 50ms→30ms
+4. `readAT()` 收到 OK/ERROR/`>` 后立即返回，不再等满超时（最大优化点）
+5. 遥测频率从 5s→10s，心跳频率从 8s→15s，减少串口占用
+
+### 坑15：`readAT` 提前返回的匹配模式太严格
+
+**现象**：`readAT` 加了提前返回后，ESP 初始化失败，一直 retry。
+
+**原因**：首次匹配用了 `strstr(workBuf, "\r\nOK\r\n")`，要求精确的换行包裹。但 ESP-01S 的响应格式可能是 `OK\r\n`（行首无 `\r\n`），导致匹配不到，等到超时才返回。
+
+**解决**：放宽匹配模式，直接匹配 `"OK"` / `"ERROR"` / `"FAIL"` / `">"` 即可。匹配后再等 50ms 确保后续数据（如 `+MQTTSUBRECV` 可能在 OK 之后到达）也读入。
+
+### 坑16：`checkMQTTMsg()` 的 JSON 提取逻辑偏移量错误
+
+**现象**：`[MQTT-RECV] found SUB_RECV!` 但 `[MQTT-PAYLOAD]` 为空，指令无法执行。
+
+**原因**：`checkMQTTMsg()` 用 `recv + 15` 跳过 `+MQTTSUBRECV:` 前缀，但该字符串只有 13 个字符，偏移多了 2 字节。后续的逗号跳过逻辑也会被 JSON 内部的逗号干扰，导致 payload 提取失败。
+
+**解决**：不要手动计算偏移量跳逗号，直接用 `strchr(recv, '{')` 和 `strrchr(jsonStart, '}')` 提取 JSON，和 `readAT()` 中的逻辑保持一致。
+
+**教训**：解析 AT 指令输出时，不要依赖固定偏移量或逗号计数，直接定位 JSON 的 `{` 和 `}` 最可靠。
 
 ---
 
