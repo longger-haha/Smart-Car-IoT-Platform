@@ -64,43 +64,44 @@ const int WIFI_SCAN_MAX_APS = 6;  // 上报最多 AP 数
 // 扩展板内部: 74HC595 移位寄存器控制 L293D 的 IN1/IN2/IN3/IN4
 // ESP32 通过 LATCH/CLOCK/DATA 控制 74HC595, PWM 控制 EN
 //
-// 接线映射:
-//   扩展板 D3  (PWM M1)  → ESP32 GPIO16
-//   扩展板 D4  (LATCH)   → ESP32 GPIO18
-//   扩展板 D5  (PWM M2)  → ESP32 GPIO19
-//   扩展板 D6  (PWM M3)  → ESP32 GPIO17
-//   扩展板 D7  (CLOCK)   → ESP32 GPIO23
-//   扩展板 D8  (DATA)    → ESP32 GPIO13
-//   扩展板 D11 (PWM M4)  → ESP32 GPIO4
+// 接线映射 (来自 AFMotor.h 源码确认):
+//   扩展板 D12 (LATCH)   → ESP32 GPIO5    ← 锁存信号
+//   扩展板 D4  (CLOCK)   → ESP32 GPIO18   ← 移位时钟
+//   扩展板 D7  (ENABLE)  → ESP32 GPIO23   ← 输出使能 (LOW=启用)
+//   扩展板 D8  (DATA)    → ESP32 GPIO13   ← 串行数据
+//   扩展板 D11 (PWM M1)  → ESP32 GPIO4    ← M1 右前
+//   扩展板 D3  (PWM M2)  → ESP32 GPIO16   ← M2 左前
+//   扩展板 D6  (PWM M3)  → ESP32 GPIO17   ← M3 左后
+//   扩展板 D5  (PWM M4)  → ESP32 GPIO19   ← M4 右后
 
-#define MOTOR_LATCH_PIN  18   // 74HC595 锁存 (扩展板 D4)
-#define MOTOR_CLOCK_PIN  23   // 74HC595 时钟 (扩展板 D7)
+#define MOTOR_LATCH_PIN  5    // 74HC595 锁存 (扩展板 D12)
+#define MOTOR_CLOCK_PIN  18   // 74HC595 时钟 (扩展板 D4)
+#define MOTOR_ENABLE_PIN 23   // 74HC595 使能 (扩展板 D7, LOW=启用)
 #define MOTOR_DATA_PIN   13   // 74HC595 数据 (扩展板 D8)
 
-#define PWM_M1_PIN       16   // M1 右前 PWM (扩展板 D3)
-#define PWM_M2_PIN       19   // M2 左前 PWM (扩展板 D5)
+#define PWM_M1_PIN       4    // M1 右前 PWM (扩展板 D11)
+#define PWM_M2_PIN       16   // M2 左前 PWM (扩展板 D3)
 #define PWM_M3_PIN       17   // M3 左后 PWM (扩展板 D6)
-#define PWM_M4_PIN       4    // M4 右后 PWM (扩展板 D11)
+#define PWM_M4_PIN       19   // M4 右后 PWM (扩展板 D5)
 
 // LEDC 配置
 #define LEDC_FREQ     5000
 #define LEDC_BITS     8
 
-// 74HC595 移位寄存器位映射 (与 AFMotor Shield 一致)
-// Bit7=IN4B, Bit6=IN3B, Bit5=IN4A, Bit4=IN3A, Bit3=IN2B, Bit2=IN1B, Bit1=IN2A, Bit0=IN1A
-// M1(右前): IN1A=bit0, IN1B=bit2  (PWM=M1)
-// M2(左前): IN2A=bit1, IN2B=bit3  (PWM=M2)
-// M3(左后): IN3A=bit4, IN3B=bit6  (PWM=M3)
-// M4(右后): IN4A=bit5, IN4B=bit7  (PWM=M4)
+// 74HC595 移位寄存器位映射 (来自 AFMotor.h 源码)
+// M1(右前): MOTOR1_A=bit2 (正转), MOTOR1_B=bit3 (反转), PWM=D11
+// M2(左前): MOTOR2_A=bit1 (正转), MOTOR2_B=bit4 (反转), PWM=D3
+// M3(左后): MOTOR3_A=bit5 (正转), MOTOR3_B=bit7 (反转), PWM=D6
+// M4(右后): MOTOR4_A=bit0 (正转), MOTOR4_B=bit6 (反转), PWM=D5
 
-#define BIT_IN1A  0  // M1 正转
-#define BIT_IN1B  2  // M1 反转
-#define BIT_IN2A  1  // M2 正转
-#define BIT_IN2B  3  // M2 反转
-#define BIT_IN3A  4  // M3 正转
-#define BIT_IN3B  6  // M3 反转
-#define BIT_IN4A  5  // M4 正转
-#define BIT_IN4B  7  // M4 反转
+#define BIT_M1_FWD  2  // M1 正转 (MOTOR1_A)
+#define BIT_M1_REV  3  // M1 反转 (MOTOR1_B)
+#define BIT_M2_FWD  1  // M2 正转 (MOTOR2_A)
+#define BIT_M2_REV  4  // M2 反转 (MOTOR2_B)
+#define BIT_M3_FWD  5  // M3 正转 (MOTOR3_A)
+#define BIT_M3_REV  7  // M3 反转 (MOTOR3_B)
+#define BIT_M4_FWD  0  // M4 正转 (MOTOR4_A)
+#define BIT_M4_REV  6  // M4 反转 (MOTOR4_B)
 
 // ═══ 全局对象 ═══
 
@@ -112,7 +113,7 @@ DHT dht(DHT_PIN, DHT_TYPE);
 
 bool wifiConnected = false;
 bool mqttConnected = false;
-int  speedPwm = 150;
+int  speedPwm = 200;
 unsigned long msgSeq = 0;
 unsigned long tTelemetry = 0;
 unsigned long tHeartbeat = 0;
@@ -193,7 +194,10 @@ String hmacSign(const char* message) {
 
 // ═══ 电机控制 (AFMotor Shield L293D 扩展板 via 74HC595) ═══
 // 扩展板内部: 74HC595 控制 IN1/IN2, PWM 控制 EN
-// 不用 AFMotor 库, 直接操作移位寄存器
+// 引脚映射来自 AFMotor.h 源码:
+//   LATCH=D12, CLOCK=D4, ENABLE=D7(LOW=启用), DATA=D8
+//   M1 PWM=D11, M2 PWM=D3, M3 PWM=D6, M4 PWM=D5
+// 位映射: M1=bit2/3, M2=bit1/4, M3=bit5/7, M4=bit0/6
 
 static uint8_t motorShiftReg = 0;  // 74HC595 当前值
 
@@ -208,8 +212,11 @@ void initMotors() {
   pinMode(MOTOR_LATCH_PIN, OUTPUT);
   pinMode(MOTOR_CLOCK_PIN, OUTPUT);
   pinMode(MOTOR_DATA_PIN, OUTPUT);
+  pinMode(MOTOR_ENABLE_PIN, OUTPUT);
+
   motorShiftReg = 0;
   motorShiftOut(0);
+  digitalWrite(MOTOR_ENABLE_PIN, LOW);  // 启用 74HC595 输出!
 
   // PWM 引脚
   ledcAttach(PWM_M1_PIN, LEDC_FREQ, LEDC_BITS);
@@ -223,7 +230,6 @@ void initMotors() {
 void setMotorAF(uint8_t fwdBit, uint8_t bwdBit, int pwmPin, int speed, bool forward) {
   motorShiftReg &= ~((1 << fwdBit) | (1 << bwdBit));  // 清除该电机两位
   if (speed == 0) {
-    // 释放: 两位都0, PWM=0
     ledcWrite(pwmPin, 0);
   } else if (forward) {
     motorShiftReg |= (1 << fwdBit);
@@ -236,34 +242,34 @@ void setMotorAF(uint8_t fwdBit, uint8_t bwdBit, int pwmPin, int speed, bool forw
 }
 
 void fwd(int spd) {
-  setMotorAF(BIT_IN2A, BIT_IN2B, PWM_M2_PIN, spd, true);   // M2 左前
-  setMotorAF(BIT_IN1A, BIT_IN1B, PWM_M1_PIN, spd, true);   // M1 右前
-  setMotorAF(BIT_IN3A, BIT_IN3B, PWM_M3_PIN, spd, true);   // M3 左后
-  setMotorAF(BIT_IN4A, BIT_IN4B, PWM_M4_PIN, spd, true);   // M4 右后
+  setMotorAF(BIT_M2_FWD, BIT_M2_REV, PWM_M2_PIN, spd, true);   // M2 左前
+  setMotorAF(BIT_M1_FWD, BIT_M1_REV, PWM_M1_PIN, spd, true);   // M1 右前
+  setMotorAF(BIT_M3_FWD, BIT_M3_REV, PWM_M3_PIN, spd, true);   // M3 左后
+  setMotorAF(BIT_M4_FWD, BIT_M4_REV, PWM_M4_PIN, spd, true);   // M4 右后
   Serial.printf("[MOTOR] fwd spd=%d\n", spd);
 }
 
 void bwd(int spd) {
-  setMotorAF(BIT_IN2A, BIT_IN2B, PWM_M2_PIN, spd, false);  // M2 左前
-  setMotorAF(BIT_IN1A, BIT_IN1B, PWM_M1_PIN, spd, false);  // M1 右前
-  setMotorAF(BIT_IN3A, BIT_IN3B, PWM_M3_PIN, spd, false);  // M3 左后
-  setMotorAF(BIT_IN4A, BIT_IN4B, PWM_M4_PIN, spd, false);  // M4 右后
+  setMotorAF(BIT_M2_FWD, BIT_M2_REV, PWM_M2_PIN, spd, false);  // M2 左前
+  setMotorAF(BIT_M1_FWD, BIT_M1_REV, PWM_M1_PIN, spd, false);  // M1 右前
+  setMotorAF(BIT_M3_FWD, BIT_M3_REV, PWM_M3_PIN, spd, false);  // M3 左后
+  setMotorAF(BIT_M4_FWD, BIT_M4_REV, PWM_M4_PIN, spd, false);  // M4 右后
   Serial.printf("[MOTOR] bwd spd=%d\n", spd);
 }
 
 void rotL(int spd) {
-  setMotorAF(BIT_IN2A, BIT_IN2B, PWM_M2_PIN, spd, false);  // M2 左前 反转
-  setMotorAF(BIT_IN1A, BIT_IN1B, PWM_M1_PIN, spd, true);   // M1 右前 正转
-  setMotorAF(BIT_IN3A, BIT_IN3B, PWM_M3_PIN, spd, false);  // M3 左后 反转
-  setMotorAF(BIT_IN4A, BIT_IN4B, PWM_M4_PIN, spd, true);   // M4 右后 正转
+  setMotorAF(BIT_M2_FWD, BIT_M2_REV, PWM_M2_PIN, spd, false);  // M2 左前 反转
+  setMotorAF(BIT_M1_FWD, BIT_M1_REV, PWM_M1_PIN, spd, true);   // M1 右前 正转
+  setMotorAF(BIT_M3_FWD, BIT_M3_REV, PWM_M3_PIN, spd, false);  // M3 左后 反转
+  setMotorAF(BIT_M4_FWD, BIT_M4_REV, PWM_M4_PIN, spd, true);   // M4 右后 正转
   Serial.printf("[MOTOR] rotL spd=%d\n", spd);
 }
 
 void rotR(int spd) {
-  setMotorAF(BIT_IN2A, BIT_IN2B, PWM_M2_PIN, spd, true);   // M2 左前 正转
-  setMotorAF(BIT_IN1A, BIT_IN1B, PWM_M1_PIN, spd, false);  // M1 右前 反转
-  setMotorAF(BIT_IN3A, BIT_IN3B, PWM_M3_PIN, spd, true);   // M3 左后 正转
-  setMotorAF(BIT_IN4A, BIT_IN4B, PWM_M4_PIN, spd, false);  // M4 右后 反转
+  setMotorAF(BIT_M2_FWD, BIT_M2_REV, PWM_M2_PIN, spd, true);   // M2 左前 正转
+  setMotorAF(BIT_M1_FWD, BIT_M1_REV, PWM_M1_PIN, spd, false);  // M1 右前 反转
+  setMotorAF(BIT_M3_FWD, BIT_M3_REV, PWM_M3_PIN, spd, true);   // M3 左后 正转
+  setMotorAF(BIT_M4_FWD, BIT_M4_REV, PWM_M4_PIN, spd, false);  // M4 右后 反转
   Serial.printf("[MOTOR] rotR spd=%d\n", spd);
 }
 
@@ -404,6 +410,11 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
   const char* cmd = doc["command"] | doc["cmd"] | "";
   int spd = doc["speed_pwm"] | speedPwm;
   if (spd <= 0 || spd > 255) spd = speedPwm;
+
+  Serial.printf("[CMD] command=%s speed_pwm=%d\n", cmd, spd);
+
+  // DC电机启动死区: PWM < 130 时电机只嗡嗡响不转, 需要最低130才能克服静摩擦
+  if (spd > 0 && spd < 130) spd = 130;
 
   if (strcmp(cmd, "forward") == 0)       { speedPwm = spd; fwd(spd); }
   else if (strcmp(cmd, "backward") == 0)  { speedPwm = spd; bwd(spd); }
@@ -569,19 +580,19 @@ void setup() {
 
   // ── 电机自测: 每个轮子正转1秒 ──
   Serial.println("[MOTOR-TEST] M2 左前 forward 1s...");
-  setMotorAF(BIT_IN2A, BIT_IN2B, PWM_M2_PIN, 200, true);
+  setMotorAF(BIT_M2_FWD, BIT_M2_REV, PWM_M2_PIN, 200, true);
   delay(1000); stopMotors(); delay(300);
 
   Serial.println("[MOTOR-TEST] M1 右前 forward 1s...");
-  setMotorAF(BIT_IN1A, BIT_IN1B, PWM_M1_PIN, 200, true);
+  setMotorAF(BIT_M1_FWD, BIT_M1_REV, PWM_M1_PIN, 200, true);
   delay(1000); stopMotors(); delay(300);
 
   Serial.println("[MOTOR-TEST] M3 左后 forward 1s...");
-  setMotorAF(BIT_IN3A, BIT_IN3B, PWM_M3_PIN, 200, true);
+  setMotorAF(BIT_M3_FWD, BIT_M3_REV, PWM_M3_PIN, 200, true);
   delay(1000); stopMotors(); delay(300);
 
   Serial.println("[MOTOR-TEST] M4 右后 forward 1s...");
-  setMotorAF(BIT_IN4A, BIT_IN4B, PWM_M4_PIN, 200, true);
+  setMotorAF(BIT_M4_FWD, BIT_M4_REV, PWM_M4_PIN, 200, true);
   delay(1000); stopMotors(); delay(300);
 
   Serial.println("[MOTOR-TEST] Done.");

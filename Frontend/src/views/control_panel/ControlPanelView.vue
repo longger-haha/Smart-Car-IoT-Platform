@@ -232,7 +232,7 @@ const deviceList = ref([])
 const selectedDeviceId = ref('')
 const controlMode = ref('manual')
 const speedGear = ref('mid')
-const SPEED_MAP = { low: 100, mid: 150, high: 200 }
+const SPEED_MAP = { low: 150, mid: 200, high: 255 }
 const gearOptions = [
   { value: 'low', label: '低速', icon: '🐢', pwm: 100 },
   { value: 'mid', label: '中速', icon: '🚗', pwm: 150 },

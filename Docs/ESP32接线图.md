@@ -36,32 +36,31 @@
 > ⚠️ **关键**：扩展板不能直接用 GPIO 控制 L293D！必须通过 74HC595 移位寄存器协议。
 > 之前直接连 GPIO16/17/18/19 等到扩展板引脚，电机不会转，因为信号没经过移位寄存器。
 
-#### 2.2 扩展板需要的 7 个信号
+#### 2.2 扩展板需要的 8 个信号
 
 | 扩展板引脚 | 功能 | ESP32 GPIO | 说明 |
 |-----------|------|-----------|------|
-| **D4** | LATCH (锁存) | **GPIO18** | 74HC595 锁存信号 |
-| **D7** | CLOCK (时钟) | **GPIO23** | 74HC595 时钟信号 |
+| **D12** | LATCH (锁存) | **GPIO5** | 74HC595 锁存信号 |
+| **D4** | CLOCK (时钟) | **GPIO18** | 74HC595 移位时钟 |
+| **D7** | ENABLE (使能) | **GPIO23** | 74HC595 输出使能，**LOW=启用** |
 | **D8** | DATA (数据) | **GPIO13** | 74HC595 串行数据 |
-| **D3** | PWM M1 | **GPIO16** | M1 右前 使能/PWM |
-| **D5** | PWM M2 | **GPIO19** | M2 左前 使能/PWM |
+| **D11** | PWM M1 | **GPIO4** | M1 右前 使能/PWM |
+| **D3** | PWM M2 | **GPIO16** | M2 左前 使能/PWM |
 | **D6** | PWM M3 | **GPIO17** | M3 左后 使能/PWM |
-| **D11** | PWM M4 | **GPIO4** | M4 右后 使能/PWM |
+| **D5** | PWM M4 | **GPIO19** | M4 右后 使能/PWM |
+
+> ⚠️ **D7 (ENABLE) 必须接 LOW 才能启用 74HC595 输出！** 如果不接或悬空，所有电机都不会动。
 
 #### 2.3 74HC595 移位寄存器位映射
 
-扩展板的 74HC595 输出 8 位数据，每一位控制一个 L293D 输入：
+来自 AFMotor.h 源码确认的位映射：
 
 ```
-74HC595 输出位:
-  Bit7  Bit6  Bit5  Bit4  Bit3  Bit2  Bit1  Bit0
-  IN4B  IN3B  IN4A  IN3A  IN2B  IN1B  IN2A  IN1A
-
-电机对应:
-  M1(右前): IN1A=Bit0 (正转), IN1B=Bit2 (反转), PWM=D3
-  M2(左前): IN2A=Bit1 (正转), IN2B=Bit3 (反转), PWM=D5
-  M3(左后): IN3A=Bit4 (正转), IN3B=Bit6 (反转), PWM=D6
-  M4(右后): IN4A=Bit5 (正转), IN4B=Bit7 (反转), PWM=D11
+74HC595 位映射 (AFMotor.h 定义):
+  M1(右前): MOTOR1_A=Bit2 (正转), MOTOR1_B=Bit3 (反转), PWM=D11
+  M2(左前): MOTOR2_A=Bit1 (正转), MOTOR2_B=Bit4 (反转), PWM=D3
+  M3(左后): MOTOR3_A=Bit5 (正转), MOTOR3_B=Bit7 (反转), PWM=D6
+  M4(右后): MOTOR4_A=Bit0 (正转), MOTOR4_B=Bit6 (反转), PWM=D5
 ```
 
 #### 2.4 电机控制原理
@@ -81,23 +80,24 @@
 
 | 扩展板端口 | 轮子 | 74HC595 正转位 | 74HC595 反转位 | PWM引脚 |
 |-----------|------|-------------|-------------|---------|
-| M1 | 右前 (RF) | Bit0 (IN1A) | Bit2 (IN1B) | D3 → GPIO16 |
-| M2 | 左前 (LF) | Bit1 (IN2A) | Bit3 (IN2B) | D5 → GPIO19 |
-| M3 | 左后 (LB) | Bit4 (IN3A) | Bit6 (IN3B) | D6 → GPIO17 |
-| M4 | 右后 (RB) | Bit5 (IN4A) | Bit7 (IN4B) | D11 → GPIO4 |
+| M1 | 右前 (RF) | Bit2 (MOTOR1_A) | Bit3 (MOTOR1_B) | D11 → GPIO4 |
+| M2 | 左前 (LF) | Bit1 (MOTOR2_A) | Bit4 (MOTOR2_B) | D3 → GPIO16 |
+| M3 | 左后 (LB) | Bit5 (MOTOR3_A) | Bit7 (MOTOR3_B) | D6 → GPIO17 |
+| M4 | 右后 (RB) | Bit0 (MOTOR4_A) | Bit6 (MOTOR4_B) | D5 → GPIO19 |
 
 #### 2.6 完整接线表（跳线连接）
 
 ```
 扩展板排针          跳线         ESP32 GPIO
 ─────────────────────────────────────────
-D3  (PWM M1)   ──── 跳线 ────  GPIO16
-D4  (LATCH)    ──── 跳线 ────  GPIO18
-D5  (PWM M2)   ──── 跳线 ────  GPIO19
-D6  (PWM M3)   ──── 跳线 ────  GPIO17
-D7  (CLOCK)    ──── 跳线 ────  GPIO23
+D12 (LATCH)    ──── 跳线 ────  GPIO5
+D4  (CLOCK)    ──── 跳线 ────  GPIO18
+D7  (ENABLE)   ──── 跳线 ────  GPIO23   ← 必须LOW才启用!
 D8  (DATA)     ──── 跳线 ────  GPIO13
-D11 (PWM M4)   ──── 跳线 ────  GPIO4
+D11 (PWM M1右前) ── 跳线 ────  GPIO4
+D3  (PWM M2左前) ── 跳线 ────  GPIO16
+D6  (PWM M3左后) ── 跳线 ────  GPIO17
+D5  (PWM M4右后) ── 跳线 ────  GPIO19
 5V             ──── 跳线 ────  5V (或 VIN)
 GND            ──── 跳线 ────  GND
 ```
@@ -148,13 +148,14 @@ GND            ──── 跳线 ────  GND
 ╠══════════════════════════════════════════════════════════════╣
 ║                                                              ║
 ║  【电机驱动扩展板 - 74HC595 + PWM】                        ║
-║  GPIO18  ──→  LATCH (扩展板 D4, 74HC595 锁存)              ║
-║  GPIO23  ──→  CLOCK (扩展板 D7, 74HC595 时钟)              ║
+║  GPIO5   ──→  LATCH (扩展板 D12, 74HC595 锁存)             ║
+║  GPIO18  ──→  CLOCK (扩展板 D4, 74HC595 时钟)              ║
+║  GPIO23  ──→  ENABLE (扩展板 D7, LOW=启用!)                ║
 ║  GPIO13  ──→  DATA  (扩展板 D8, 74HC595 数据)              ║
-║  GPIO16  ──→  PWM M1 (扩展板 D3, 右前)                     ║
-║  GPIO19  ──→  PWM M2 (扩展板 D5, 左前)                     ║
+║  GPIO4   ──→  PWM M1 (扩展板 D11, 右前)                    ║
+║  GPIO16  ──→  PWM M2 (扩展板 D3, 左前)                     ║
 ║  GPIO17  ──→  PWM M3 (扩展板 D6, 左后)                     ║
-║  GPIO4   ──→  PWM M4 (扩展板 D11, 右后)                    ║
+║  GPIO19  ──→  PWM M4 (扩展板 D5, 右后)                     ║
 ║                                                              ║
 ║  【传感器】                                                  ║
 ║  GPIO21  ──→  MPU6050 SDA                                    ║
@@ -168,7 +169,7 @@ GND            ──── 跳线 ────  GND
 ║  【不可用 / 避免使用】                                       ║
 ║  GPIO0   ──→  ⚠️ Strapping (BOOT按钮)                       ║
 ║  GPIO2   ──→  ⚠️ 板载LED, Strapping                         ║
-║  GPIO5   ──→  ✅ 可用 (未分配)                               ║
+║  GPIO5   ──→  ✅ LATCH (扩展板 D12)                        ║
 ║  GPIO12  ──→  ⚠️ Strapping (Flash电压), 禁用!                ║
 ║  GPIO15  ──→  ⚠️ Strapping (静默启动信息)                    ║
 ║  GPIO34-39 ──→ 仅输入, 不可做PWM输出                         ║
@@ -199,15 +200,16 @@ GND            ──── 跳线 ────  GND
 ║  红外右             D10        ──→   D14            ║
 ║  DHT11              D13        ──→   D32            ║
 ║                                                      ║
-║  【电机驱动扩展板 - 7根跳线】                        ║
+║  【电机驱动扩展板 - 8根跳线】                         ║
 ║  ───────────────────────────────────────────────     ║
-║  扩展板 D3  (PWM M1右前) ──→   D16 (GPIO16)         ║
-║  扩展板 D4  (LATCH)      ──→   D18 (GPIO18)         ║
-║  扩展板 D5  (PWM M2左前) ──→   D19 (GPIO19)         ║
+║  扩展板 D12 (LATCH)     ──→   D5  (GPIO5)           ║
+║  扩展板 D4  (CLOCK)     ──→   D18 (GPIO18)          ║
+║  扩展板 D7  (ENABLE)    ──→   D23 (GPIO23) LOW=启用 ║
+║  扩展板 D8  (DATA)      ──→   D13 (GPIO13)          ║
+║  扩展板 D11 (PWM M1右前) ──→   D4  (GPIO4)          ║
+║  扩展板 D3  (PWM M2左前) ──→   D16 (GPIO16)         ║
 ║  扩展板 D6  (PWM M3左后) ──→   D17 (GPIO17)         ║
-║  扩展板 D7  (CLOCK)      ──→   D23 (GPIO23)         ║
-║  扩展板 D8  (DATA)       ──→   D13 (GPIO13)         ║
-║  扩展板 D11 (PWM M4右后) ──→   D4  (GPIO4)          ║
+║  扩展板 D5  (PWM M4右后) ──→   D19 (GPIO19)         ║
 ║  扩展板 5V             ──→   ESP32 5V/VIN           ║
 ║  扩展板 GND            ──→   ESP32 GND              ║
 ║  扩展板 EXT_PWR        ──→   7.4V 电池 (电机电源)   ║
@@ -230,19 +232,32 @@ GND            ──── 跳线 ────  GND
 固件使用 **74HC595 移位寄存器协议** 直接控制扩展板，不依赖 AFMotor 库：
 
 ```cpp
+// 引脚定义 (来自 AFMotor.h 源码确认)
+#define MOTOR_LATCH_PIN  5    // D12 → GPIO5  (锁存)
+#define MOTOR_CLOCK_PIN  18   // D4  → GPIO18 (时钟)
+#define MOTOR_ENABLE_PIN 23   // D7  → GPIO23 (使能, LOW=启用!)
+#define MOTOR_DATA_PIN   13   // D8  → GPIO13 (数据)
+
 // 发送数据到 74HC595
 void motorShiftOut(uint8_t val) {
-  digitalWrite(MOTOR_LATCH_PIN, LOW);       // 开始
-  shiftOut(MOTOR_DATA_PIN, MOTOR_CLOCK_PIN, MSBFIRST, val);  // 串行发送8位
-  digitalWrite(MOTOR_LATCH_PIN, HIGH);      // 锁存输出
+  digitalWrite(MOTOR_LATCH_PIN, LOW);
+  shiftOut(MOTOR_DATA_PIN, MOTOR_CLOCK_PIN, MSBFIRST, val);
+  digitalWrite(MOTOR_LATCH_PIN, HIGH);
 }
 
-// 设置单个电机
+// 初始化时必须启用 74HC595 输出
+void initMotors() {
+  pinMode(MOTOR_ENABLE_PIN, OUTPUT);
+  digitalWrite(MOTOR_ENABLE_PIN, LOW);  // LOW = 启用! 这步不能漏!
+  // ...
+}
+
+// 设置单个电机 (位映射来自 AFMotor.h)
 void setMotorAF(uint8_t fwdBit, uint8_t bwdBit, int pwmPin, int speed, bool forward) {
-  motorShiftReg &= ~((1 << fwdBit) | (1 << bwdBit));  // 清除方向位
-  if (forward) motorShiftReg |= (1 << fwdBit);         // 正转
-  else         motorShiftReg |= (1 << bwdBit);         // 反转
-  motorShiftOut(motorShiftReg);                         // 更新移位寄存器
-  ledcWrite(pwmPin, speed);                             // 设置PWM速度
+  motorShiftReg &= ~((1 << fwdBit) | (1 << bwdBit));
+  if (forward) motorShiftReg |= (1 << fwdBit);
+  else         motorShiftReg |= (1 << bwdBit);
+  motorShiftOut(motorShiftReg);
+  ledcWrite(pwmPin, speed);
 }
 ```
