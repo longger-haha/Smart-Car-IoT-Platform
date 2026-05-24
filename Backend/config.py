@@ -37,6 +37,10 @@ class Config:
     # AES 加密密钥（16 字节）
     AES_KEY = os.getenv('AES_KEY', 'SmartRover2026!!').encode('utf-8')[:16]
 
+    # ── WiFi 定位 ──────────────────────────────────────────────
+    # Google Geolocation API Key (ESP32 无 GPS 时使用 WiFi AP 定位)
+    GOOGLE_GEOLOCATION_API_KEY = os.getenv('GOOGLE_GEOLOCATION_API_KEY', '')
+
     # ── 导航引擎参数 ────────────────────────────────────────────
     NAV_PID_KP           = float(os.getenv('NAV_PID_KP', '2.5'))
     NAV_PID_KI           = float(os.getenv('NAV_PID_KI', '0.02'))

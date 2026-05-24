@@ -367,3 +367,128 @@ UNO 固件                    MQTT Broker              后端                   
 | MQTT_BROKER_PORT | Broker端口 | 1883 |
 
 **注意**：固件中的 `XOR_KEY` 必须与后端的 `AES_KEY` 一致（后端 XOR_KEY 默认 fallback 到 AES_KEY）。
+
+---
+
+## 六、ESP32 迁移指南
+
+> **迁移日期**: 2026-05-24
+> **原因**: UNO 内存不足（2KB SRAM），ESP32 拥有 520KB SRAM + 内置 WiFi，彻底解决内存和延迟问题。
+
+### 6.1 核心变化
+
+| 项目 | UNO 方案 | ESP32 方案 |
+|------|----------|-----------|
+| WiFi | ESP-01S + AT指令 (串口) | 内置 WiFi (零延迟) |
+| MQTT | AT+MQTT (半双工串口) | PubSubClient (全双工) |
+| 加密 | XOR (轻量) | AES-128 CBC + HMAC-SHA256 |
+| 电机 | AFMotor Shield | L293D 直连 GPIO + LEDC PWM |
+| I2C | 手动 bit-bang (节省内存) | 硬件 Wire 库 |
+| GPS | 极简 NMEA 解析 | 同 (ESP32 内存充裕可换 TinyGPS++) |
+| JSON | snprintf 手动拼接 | ArduinoJson 库 |
+| 指令延迟 | 1-10 秒 | <100ms |
+| RAM | ~1700B / 2048B (83%) | ~50KB / 520KB (10%) |
+
+### 6.2 引脚对照
+
+| 传感器 | UNO 引脚 | ESP32 引脚 |
+|--------|---------|-----------|
+| DHT11 | D13 | GPIO32 |
+| HC-SR04 TRIG | A0 | GPIO25 |
+| HC-SR04 ECHO | A1 | GPIO26 |
+| 红外左 | D9 | GPIO27 |
+| 红外右 | D10 | GPIO14 |
+| MPU6050 SDA | A4 | GPIO21 |
+| MPU6050 SCL | A5 | GPIO22 |
+| 左前 PWM | D3 (AFMotor) | GPIO16 |
+| 左前 DIR | D4 (AFMotor) | GPIO17 |
+| 右前 PWM | D5 (AFMotor) | GPIO18 |
+| 右前 DIR | D6 (AFMotor) | GPIO19 |
+| 左后 PWM | D7 (AFMotor) | GPIO23 |
+| 左后 DIR | D8 (AFMotor) | GPIO13 |
+| 右后 PWM | D11 (AFMotor) | GPIO4 |
+| 右后 DIR | D12 (AFMotor) | GPIO12 ⚠️ |
+
+> ⚠️ GPIO12 是 strapping pin，启动时被拉低会影响闪存电压选择。L293D 方向控制默认高电平问题不大，但如不放心可换 GPIO15。
+
+### 6.3 移除的组件
+
+- ESP-01S 模块及所有接线
+- AFMotor Shield
+- SoftwareSerial 库
+- 电阻分压电路 (5V→3.3V)
+- XOR 加密相关代码
+
+### 6.4 后端适配
+
+ESP32 遥测数据使用 `AES:base64iv:base64ct` 格式（带 `AES:` 前缀），后端 `_process_telemetry` 已更新：
+- 检测 `AES:` 前缀，去掉后传给 `aes_decrypt`
+- 兼容旧 UNO 的 `XOR:` 前缀和无前缀格式
+
+心跳使用明文 JSON（无加密），后端 `_process_heartbeat` 已支持。
+
+### 6.5 供电注意
+
+- ESP32 3V3 引脚最大 600mA，**不能给电机供电**
+- 电机必须用独立电源 → L293D → 电机
+- 所有 GND 连在一起
+- MPU6050 只能接 3.3V
+
+### 6.6 ESP32 特有踩坑
+
+#### 坑17：GPIO12 Strapping Pin
+
+**现象**：ESP32 启动时不断重启或无法烧录。
+
+**原因**：GPIO12 是 strapping pin，启动时决定闪存电压 (3.3V/1.8V)。如果 L293D 将其拉低，闪存电压变为 1.8V，导致启动失败。
+
+**解决**：
+1. 优先避免使用 GPIO12，改用 GPIO15
+2. 或确保 L293D DIR 引脚在启动时为高电平/悬空
+
+#### 坑18：ESP32 串口波特率
+
+**现象**：串口监视器显示乱码。
+
+**原因**：ESP32 默认波特率 115200，而 UNO 是 9600。
+
+**解决**：串口监视器设置为 115200。
+
+#### 坑19：LEDC PWM 通道分配
+
+**现象**：电机转速异常或不动。
+
+**原因**：ESP32 LEDC 通道号和 GPIO 号不同，必须通过 `ledcAttachPin(pin, channel)` 绑定。
+
+**解决**：确保 `ledcSetup()` → `ledcAttachPin()` → `ledcWrite()` 通道号一致。
+
+#### 坑20：ArduinoJson 内存分配
+
+**现象**：运行时崩溃重启。
+
+**原因**：`DynamicJsonDocument` 在堆上分配，ESP32 虽然内存充裕但碎片化可能导致分配失败。
+
+**解决**：使用 `StaticJsonDocument<512>` 栈分配，大小根据实际 JSON 长度调整。
+
+#### 坑21：WiFi 扫描导致 MQTT 断连
+
+**现象**：`scanWiFiAPs()` 后 MQTT 连接丢失。
+
+**原因**：`WiFi.scanNetworks()` 会短暂断开 STA 连接（约 2 秒），期间 MQTT 无法收发。
+
+**解决**：
+1. 扫描频率控制在 30 秒一次
+2. 扫描后检查 MQTT 连接，断开则自动重连
+3. 不要在指令处理期间触发扫描
+
+#### 坑22：WiFi 定位精度不足
+
+**现象**：WiFi 定位坐标偏差大（3-50m）。
+
+**原因**：WiFi 定位依赖周围 AP 密度，室内/偏远区域精度差。
+
+**解决**：
+1. 确保 `GOOGLE_GEOLOCATION_API_KEY` 已配置
+2. 上报至少 3 个 AP 的 BSSID+RSSI
+3. 室内场景可结合 IMU 航向推算辅助定位
+4. 如需高精度，仍需外接 GPS 模块

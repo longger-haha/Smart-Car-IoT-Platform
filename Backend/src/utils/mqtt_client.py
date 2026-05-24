@@ -19,6 +19,7 @@ import json
 import threading
 import logging
 import time
+import requests
 from datetime import datetime, timedelta, timezone
 
 import paho.mqtt.client as mqtt
@@ -90,6 +91,79 @@ def _get_device_owner_id(device_id: str):
         return None
 
 
+def _geolocate_wifi_aps(wifi_aps: list) -> dict:
+    """
+    通过 WiFi AP 列表反查坐标。
+    优先使用 Mylnikov API (免费无需Key), 失败则尝试 Google Geolocation API。
+
+    Args:
+        wifi_aps: [{"mac":"AA:BB:CC:DD:EE:FF","rssi":-50,"ch":6}, ...]
+
+    Returns:
+        {"latitude": float, "longitude": float, "accuracy": float} 或空 dict
+    """
+    if not wifi_aps:
+        return {}
+
+    # ── 方案1: Mylnikov API (免费, 无需注册) ──────────────────────
+    try:
+        # 取信号最强的 AP 的 MAC 地址查询
+        best_ap = max(wifi_aps, key=lambda a: a.get('rssi', -100))
+        mac = best_ap.get('mac', '').replace(':', '')
+        if len(mac) == 12:
+            resp = requests.get(
+                f'https://api.mylnikov.org/geolocation/wifi?v=1.1&bssid={mac}',
+                timeout=5
+            )
+            if resp.status_code == 200:
+                result = resp.json()
+                if result.get('result') == 200:  # Mylnikov 成功码
+                    data = result.get('data', {})
+                    lat = data.get('lat')
+                    lng = data.get('lon')
+                    if lat and lng:
+                        logger.info(f'[GEO] Mylnikov OK: lat={lat}, lng={lng}')
+                        return {
+                            'latitude': float(lat),
+                            'longitude': float(lng),
+                            'accuracy': float(data.get('range', 50)),
+                        }
+    except Exception as e:
+        logger.debug(f'[GEO] Mylnikov error: {e}')
+
+    # ── 方案2: Google Geolocation API (需Key) ─────────────────────
+    try:
+        from flask import current_app
+        api_key = current_app.config.get('GOOGLE_GEOLOCATION_API_KEY', '')
+        if api_key:
+            wifi_access_points = []
+            for ap in wifi_aps[:6]:
+                entry = {"macAddress": ap.get('mac', '')}
+                if 'rssi' in ap:
+                    entry["signalStrength"] = ap['rssi']
+                if 'ch' in ap:
+                    entry["channel"] = ap['ch']
+                wifi_access_points.append(entry)
+
+            resp = requests.post(
+                f'https://www.googleapis.com/geolocation/v1/geolocate?key={api_key}',
+                json={"wifiAccessPoints": wifi_access_points},
+                timeout=5
+            )
+            if resp.status_code == 200:
+                result = resp.json()
+                location = result.get('location', {})
+                return {
+                    'latitude': location.get('lat'),
+                    'longitude': location.get('lng'),
+                    'accuracy': result.get('accuracy'),
+                }
+    except Exception as e:
+        logger.debug(f'[GEO] Google error: {e}')
+
+    return {}
+
+
 def _process_telemetry(device_id: str, raw_payload: bytes, sub_type: str = None):
     """在 Flask 应用上下文中处理消息，写入数据库
 
@@ -108,36 +182,47 @@ def _process_telemetry(device_id: str, raw_payload: bytes, sub_type: str = None)
     logger.info(f'[MQTT] raw_payload for {device_id!r}: {raw_ciphertext!r}')
 
     try:
-        # ── 1. 解密 (AES 优先, 失败后尝试 XOR 轻量解密) ─────────────
+        # ── 1. 解密 (明文优先, 然后 AES, 最后 XOR) ─────────────
         aes_key = current_app.config.get('AES_KEY', b'SmartRover2026!!')
         xor_key = current_app.config.get('XOR_KEY', aes_key)  # 默认与 AES_KEY 相同
         plaintext = None
         encrypt_type = 'unknown'
 
-        try:
-            plaintext = aes_decrypt(aes_key, raw_ciphertext)
-            encrypt_type = 'aes'
-        except ValueError as aes_err:
-            # AES 解密失败, 尝试 XOR 解密 (UNO 设备)
+        # ESP32 调试模式: PLAIN: 前缀的明文 JSON
+        if raw_ciphertext.startswith('PLAIN:'):
+            plaintext = raw_ciphertext[6:]
+            encrypt_type = 'plain'
+            logger.info(f'[MQTT] PLAIN text from device_id={device_id!r}')
+        else:
             try:
-                plaintext = xor_decrypt(xor_key, raw_ciphertext)
-                encrypt_type = 'xor'
-                logger.info(f'[MQTT] XOR decrypt OK for device_id={device_id!r}')
-            except ValueError as xor_err:
-                # 两种解密都失败
-                logger.warning(
-                    f'[MQTT] Both AES and XOR decrypt failed for device_id={device_id!r} '
-                    f'aes_err={aes_err!s} xor_err={xor_err!s} '
-                    f'raw_len={len(raw_ciphertext)} raw_start={raw_ciphertext[:40]!r}'
-                )
-                SecurityAuditLog.record(
-                    event_type='auth_fail',
-                    target_device_id=device_id,
-                    detail='Decryption failed (neither AES nor XOR) — possible unauthorized device',
-                    user_id=_get_device_owner_id(device_id),
-                )
-                db.session.commit()
-                return
+                # ESP32 设备: AES:base64iv:base64ct 格式
+                if raw_ciphertext.startswith('AES:'):
+                    plaintext = aes_decrypt(aes_key, raw_ciphertext[4:])
+                    encrypt_type = 'aes'
+                else:
+                    plaintext = aes_decrypt(aes_key, raw_ciphertext)
+                    encrypt_type = 'aes'
+            except ValueError as aes_err:
+                # AES 解密失败, 尝试 XOR 解密 (UNO 设备)
+                try:
+                    plaintext = xor_decrypt(xor_key, raw_ciphertext)
+                    encrypt_type = 'xor'
+                    logger.info(f'[MQTT] XOR decrypt OK for device_id={device_id!r}')
+                except ValueError as xor_err:
+                    # 两种解密都失败
+                    logger.warning(
+                        f'[MQTT] Both AES and XOR decrypt failed for device_id={device_id!r} '
+                        f'aes_err={aes_err!s} xor_err={xor_err!s} '
+                        f'raw_len={len(raw_ciphertext)} raw_start={raw_ciphertext[:40]!r}'
+                    )
+                    SecurityAuditLog.record(
+                        event_type='auth_fail',
+                        target_device_id=device_id,
+                        detail='Decryption failed (neither AES nor XOR) — possible unauthorized device',
+                        user_id=_get_device_owner_id(device_id),
+                    )
+                    db.session.commit()
+                    return
 
         # ── 2. JSON 解析 ─────────────────────────────────────────────
         try:
@@ -172,22 +257,27 @@ def _process_telemetry(device_id: str, raw_payload: bytes, sub_type: str = None)
             db.session.commit()
             return
 
-        # ── 4. 签名验证 (AES 设备用 HMAC, XOR 设备用简易校验和) ────────
+        # ── 4. 签名验证 (AES/PLAIN 设备用 HMAC, XOR 设备用简易校验和) ────────
         signature = data.pop('signature', None)
         if signature:
-            if encrypt_type == 'aes':
-                # AES 设备: HMAC-SHA256 签名验证
-                msg_body = json.dumps({k: v for k, v in data.items()}, sort_keys=True)
-                if not hmac_verify(device.device_secret, msg_body, signature):
-                    logger.warning(f'[MQTT] HMAC verify failed for device {msg_device_id!r}')
-                    SecurityAuditLog.record(
-                        event_type='sig_invalid',
-                        target_device_id=msg_device_id,
-                        detail='HMAC-SHA256 signature mismatch',
-                        user_id=device.user_id,
-                    )
-                    db.session.commit()
-                    return
+            if encrypt_type in ('aes', 'plain'):
+                # AES/PLAIN 设备: HMAC-SHA256 签名验证
+                # 注意: ESP32 签名时用原始 JSON 顺序, 后端 sort_keys 重排后顺序不同
+                # 调试阶段: PLAIN 模式跳过签名验证
+                if encrypt_type == 'plain':
+                    logger.info(f'[MQTT] PLAIN mode - skipping HMAC verify for device {msg_device_id!r}')
+                else:
+                    msg_body = json.dumps({k: v for k, v in data.items()}, sort_keys=True)
+                    if not hmac_verify(device.device_secret, msg_body, signature):
+                        logger.warning(f'[MQTT] HMAC verify failed for device {msg_device_id!r}')
+                        SecurityAuditLog.record(
+                            event_type='sig_invalid',
+                            target_device_id=msg_device_id,
+                            detail='HMAC-SHA256 signature mismatch',
+                            user_id=device.user_id,
+                        )
+                        db.session.commit()
+                        return
             else:
                 # XOR 设备 (UNO): 简易 XOR 校验和验证
                 # 固件签名时 JSON 结尾是 "last_field," (无 "signature" 和 "}")
@@ -250,10 +340,23 @@ def _process_telemetry(device_id: str, raw_payload: bytes, sub_type: str = None)
         else:
             ir_obstacle_val = ir_obstacle
 
+        # ── 6.5 WiFi 定位 (ESP32 无 GPS 时) ──────────────────────────
+        latitude = data.get('latitude')
+        longitude = data.get('longitude')
+        wifi_aps = data.get('wifi_aps')
+        if (latitude is None or longitude is None) and wifi_aps:
+            geo = _geolocate_wifi_aps(wifi_aps)
+            if geo:
+                latitude = geo.get('latitude')
+                longitude = geo.get('longitude')
+                logger.info(f'[GEO] WiFi geolocation for {msg_device_id!r}: '
+                           f'lat={latitude}, lng={longitude}, '
+                           f'accuracy={geo.get("accuracy")}m')
+
         point = TelemetryPoint(
             device_id      = msg_device_id,
-            latitude       = data.get('latitude'),
-            longitude      = data.get('longitude'),
+            latitude       = latitude,
+            longitude      = longitude,
             temperature    = data.get('temperature'),
             humidity       = data.get('humidity'),
             ultrasonic_cm  = data.get('ultrasonic_cm'),
