@@ -1,7 +1,7 @@
 """
 SecurityAuditLog SQLAlchemy 模型 — 对应 `security_audit_logs` 表
 """
-from datetime import datetime
+from datetime import datetime, timezone
 from src.extensions import db
 
 # 允许的事件类型
@@ -24,7 +24,7 @@ class SecurityAuditLog(db.Model):
     detail           = db.Column(db.Text,         nullable=True, comment='详细描述')
     is_blocked       = db.Column(db.Boolean,      nullable=False, default=True,
                                  comment='是否成功拦截')
-    occurred_at      = db.Column(db.DateTime,     nullable=False, default=datetime.utcnow,
+    occurred_at      = db.Column(db.DateTime,     nullable=False, default=lambda: datetime.now(timezone.utc),
                                  index=True, comment='事件发生时间')
 
     __table_args__ = (

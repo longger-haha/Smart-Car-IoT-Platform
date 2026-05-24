@@ -1,7 +1,7 @@
 """
 TelemetryPoint SQLAlchemy 模型 — 对应 `telemetry_points` 表
 """
-from datetime import datetime
+from datetime import datetime, timezone
 from src.extensions import db
 
 
@@ -37,7 +37,7 @@ class TelemetryPoint(db.Model):
     bat_mv         = db.Column(db.Integer,         nullable=True,  comment='电池电压(mV)')
     seq            = db.Column(db.Integer,         nullable=True,  comment='消息序号')
     raw_ciphertext = db.Column(db.Text,           nullable=True,  comment='原始接收密文')
-    recorded_at    = db.Column(db.DateTime,       nullable=False, default=datetime.utcnow,
+    recorded_at    = db.Column(db.DateTime,       nullable=False, default=lambda: datetime.now(timezone.utc),
                                index=True, comment='数据时间戳')
 
     __table_args__ = (

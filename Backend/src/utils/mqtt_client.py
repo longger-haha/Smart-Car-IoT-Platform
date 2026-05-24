@@ -19,6 +19,7 @@ import json
 import threading
 import logging
 import time
+from datetime import datetime, timedelta, timezone
 
 import paho.mqtt.client as mqtt
 
@@ -217,7 +218,7 @@ def _process_telemetry(device_id: str, raw_payload: bytes, sub_type: str = None)
         if sub_type in ('imu', 'gps'):
             recent = TelemetryPoint.query.filter_by(device_id=msg_device_id)\
                 .order_by(TelemetryPoint.recorded_at.desc()).first()
-            if recent and (datetime.now() - recent.recorded_at).total_seconds() < 30:
+            if recent and (datetime.now(timezone.utc) - recent.recorded_at).total_seconds() < 30:
                 if sub_type == 'imu':
                     recent.imu_ax = data.get('imu_ax')
                     recent.imu_ay = data.get('imu_ay')
@@ -274,7 +275,7 @@ def _process_telemetry(device_id: str, raw_payload: bytes, sub_type: str = None)
             bat_mv         = data.get('bat_mv'),
             seq            = data.get('seq'),
             raw_ciphertext = raw_ciphertext,
-            recorded_at    = datetime.now(),
+            recorded_at    = datetime.now(timezone.utc),
         )
         db.session.add(point)
 

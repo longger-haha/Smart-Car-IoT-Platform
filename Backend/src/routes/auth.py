@@ -7,7 +7,7 @@ T019 [US1]: 登录接口实现
 """
 
 import bcrypt
-from datetime import datetime
+from datetime import datetime, timezone
 
 from flask import Blueprint, request, jsonify
 from flask_jwt_extended import create_access_token
@@ -60,7 +60,7 @@ def login():
         return jsonify({'error': '用户名或密码错误'}), 401
 
     # 更新最近登录时间
-    user.last_login_at = datetime.now()
+    user.last_login_at = datetime.now(timezone.utc)
     db.session.commit()
 
     # 生成 JWT，将 role 写入 additional_claims

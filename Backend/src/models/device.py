@@ -1,7 +1,7 @@
 """
 Device SQLAlchemy 模型 — 对应 `devices` 表（设备白名单）
 """
-from datetime import datetime
+from datetime import datetime, timezone
 from src.extensions import db
 
 
@@ -19,7 +19,7 @@ class Device(db.Model):
     name           = db.Column(db.String(128), nullable=True,  comment='设备别名')
     status         = db.Column(db.Enum('online', 'offline'), nullable=False, default='offline')
     last_seen_at   = db.Column(db.DateTime,    nullable=True,  comment='最近心跳时间')
-    registered_at  = db.Column(db.DateTime,    nullable=False, default=datetime.utcnow)
+    registered_at  = db.Column(db.DateTime,    nullable=False, default=lambda: datetime.now(timezone.utc))
 
     # ── 关联 ──────────────────────────────────────────────────────────
     user             = db.relationship('User', backref=db.backref('devices', lazy=True, cascade='all, delete-orphan'))
@@ -28,7 +28,7 @@ class Device(db.Model):
 
     def touch(self):
         """更新心跳时间并标记在线"""
-        self.last_seen_at = datetime.now()
+        self.last_seen_at = datetime.now(timezone.utc)
         self.status = 'online'
 
     def to_dict(self, include_secret=False):

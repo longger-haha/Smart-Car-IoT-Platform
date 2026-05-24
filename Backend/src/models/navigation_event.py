@@ -8,7 +8,7 @@ NavigationEvent SQLAlchemy 模型 — 对应 `navigation_events` 表
   - 紧急停车
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 from src.extensions import db
 
 
@@ -29,7 +29,7 @@ class NavigationEvent(db.Model):
     wp_index         = db.Column(db.Integer,       nullable=True, comment='当前航点序号(从1开始)')
     wp_total         = db.Column(db.Integer,       nullable=True, comment='航点总数')
     state            = db.Column(db.String(16),    nullable=True, comment='导航状态: idle/cruising/avoiding/arrived/aborted')
-    occurred_at      = db.Column(db.DateTime,      nullable=False, default=datetime.utcnow,
+    occurred_at      = db.Column(db.DateTime,      nullable=False, default=lambda: datetime.now(timezone.utc),
                                  index=True, comment='事件时间')
 
     __table_args__ = (

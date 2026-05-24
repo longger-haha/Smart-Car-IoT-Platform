@@ -1,7 +1,7 @@
 import threading
 import logging
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 logger = logging.getLogger(__name__)
 
@@ -22,7 +22,7 @@ def _check_heartbeats(app):
             _Device = _Device_ref
 
     with app.app_context():
-        cutoff = datetime.now() - timedelta(seconds=HEARTBEAT_TIMEOUT_SECONDS)
+        cutoff = datetime.now(timezone.utc) - timedelta(seconds=HEARTBEAT_TIMEOUT_SECONDS)
         stale_devices = (
             _Device.query
             .filter_by(status='online')

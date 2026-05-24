@@ -16,7 +16,7 @@ import hashlib
 import hmac
 import logging
 from collections import defaultdict, deque
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional, Tuple, Dict, Any
 
 logger = logging.getLogger(__name__)
@@ -222,7 +222,7 @@ def record_abnormal_event(event_type: str, device_id: str, detail: str, severity
         'device_id': device_id,
         'detail': detail,
         'severity': severity,
-        'timestamp': datetime.now().isoformat(),
+        'timestamp': datetime.now(timezone.utc).isoformat(),
     }
     _abnormal_events[device_id].append(event)
 
@@ -245,7 +245,7 @@ def get_device_risk_score(device_id: str) -> dict:
       - 签名验证失败次数
     """
     events = _abnormal_events.get(device_id, [])
-    recent = [e for e in events if e['timestamp'] >= (datetime.now() - timedelta(hours=1)).isoformat()]
+    recent = [e for e in events if e['timestamp'] >= (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()]
 
     score = 0
     factors = []

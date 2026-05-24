@@ -13,7 +13,7 @@ GET  /api/vehicle/risk/<device_id>    → 设备安全风险评分
 
 import time
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from flask import Blueprint, request, jsonify
 from sqlalchemy import desc, func
@@ -220,7 +220,7 @@ def get_trajectory(device_id: str):
         hours = 1
         limit = 500
 
-    since = datetime.now() - timedelta(hours=hours)
+    since = datetime.now(timezone.utc) - timedelta(hours=hours)
 
     points = (
         TelemetryPoint.query
