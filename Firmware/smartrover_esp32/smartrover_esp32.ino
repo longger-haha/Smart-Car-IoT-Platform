@@ -42,7 +42,7 @@ const char* DEVICE_ID     = "10.32.44.189";
 const char* DEVICE_SECRET = "72d579dd57432ef9c9614b1261a0a5ca3de4e8d0135f961b8c826f576b65f21f";
 const char* AES_KEY_STR   = "SmartRover2026!!";  // 16 bytes
 
-const unsigned long TELEMETRY_MS = 5000;
+const unsigned long TELEMETRY_MS = 2000;
 const unsigned long HEARTBEAT_MS = 15000;
 const int WIFI_SCAN_MAX_APS = 6;  // 上报最多 AP 数
 
@@ -118,6 +118,13 @@ unsigned long msgSeq = 0;
 unsigned long tTelemetry = 0;
 unsigned long tHeartbeat = 0;
 
+// 本地实时避障
+bool localAvoidActive = false;     // 本地避障是否正在覆盖
+unsigned long tLocalAvoid = 0;     // 上次本地避障动作时间
+const unsigned long LOCAL_AVOID_MS = 100;  // 本地避障检查间隔
+const float LOCAL_SAFE_CM = 50.0;         // 本地安全距离
+const float LOCAL_CRITICAL_CM = 20.0;     // 本地紧急距离
+
 // MPU6050 原始数据
 float imuAx = 0, imuAy = 0, imuAz = 0;
 float imuGx = 0, imuGy = 0, imuGz = 0;
@@ -139,6 +146,10 @@ String aesEncrypt(const char* plaintext) {
   memcpy(input, plaintext, plainLen);
   memset(input + plainLen, padLen, padLen);
 
+  // mbedtls_aes_crypt_cbc 会修改 iv, 必须先保存原始 iv
+  uint8_t ivCopy[16];
+  memcpy(ivCopy, iv, 16);
+
   uint8_t* output = (uint8_t*)malloc(totalLen);
   mbedtls_aes_context aes;
   mbedtls_aes_init(&aes);
@@ -147,7 +158,7 @@ String aesEncrypt(const char* plaintext) {
   mbedtls_aes_free(&aes);
 
   String result = "AES:";
-  result += base64Encode(iv, 16);
+  result += base64Encode(ivCopy, 16);
   result += ":";
   result += base64Encode(output, totalLen);
 
@@ -282,6 +293,43 @@ void stopMotors() {
   ledcWrite(PWM_M4_PIN, 0);
 }
 
+void diffDrive(int pwmL, int pwmR) {
+  // DC电机启动死区: 绝对值 < 150 时电机只嗡嗡响不转
+  auto clampPwm = [](int pwm) -> int {
+    if (pwm > 0 && pwm < 150) return 150;
+    if (pwm < 0 && pwm > -150) return -150;
+    return pwm;
+  };
+  pwmL = clampPwm(pwmL);
+  pwmR = clampPwm(pwmR);
+
+  // 左侧: M2(左前) + M3(左后)
+  if (pwmL > 0) {
+    setMotorAF(BIT_M2_FWD, BIT_M2_REV, PWM_M2_PIN, pwmL, true);
+    setMotorAF(BIT_M3_FWD, BIT_M3_REV, PWM_M3_PIN, pwmL, true);
+  } else if (pwmL < 0) {
+    int spd = -pwmL;
+    setMotorAF(BIT_M2_FWD, BIT_M2_REV, PWM_M2_PIN, spd, false);
+    setMotorAF(BIT_M3_FWD, BIT_M3_REV, PWM_M3_PIN, spd, false);
+  } else {
+    setMotorAF(BIT_M2_FWD, BIT_M2_REV, PWM_M2_PIN, 0, true);
+    setMotorAF(BIT_M3_FWD, BIT_M3_REV, PWM_M3_PIN, 0, true);
+  }
+  // 右侧: M1(右前) + M4(右后)
+  if (pwmR > 0) {
+    setMotorAF(BIT_M1_FWD, BIT_M1_REV, PWM_M1_PIN, pwmR, true);
+    setMotorAF(BIT_M4_FWD, BIT_M4_REV, PWM_M4_PIN, pwmR, true);
+  } else if (pwmR < 0) {
+    int spd = -pwmR;
+    setMotorAF(BIT_M1_FWD, BIT_M1_REV, PWM_M1_PIN, spd, false);
+    setMotorAF(BIT_M4_FWD, BIT_M4_REV, PWM_M4_PIN, spd, false);
+  } else {
+    setMotorAF(BIT_M1_FWD, BIT_M1_REV, PWM_M1_PIN, 0, true);
+    setMotorAF(BIT_M4_FWD, BIT_M4_REV, PWM_M4_PIN, 0, true);
+  }
+  Serial.printf("[MOTOR] diff pwmL=%d pwmR=%d\n", pwmL, pwmR);
+}
+
 // ═══ 传感器读取 ═══
 
 float readUltrasonic() {
@@ -413,14 +461,34 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
 
   Serial.printf("[CMD] command=%s speed_pwm=%d\n", cmd, spd);
 
-  // DC电机启动死区: PWM < 130 时电机只嗡嗡响不转, 需要最低130才能克服静摩擦
-  if (spd > 0 && spd < 130) spd = 130;
+  // DC电机启动死区: PWM < 150 时电机只嗡嗡响不转, 需要最低150才能克服静摩擦
+  if (spd > 0 && spd < 150) spd = 150;
+
+  // 本地避障激活时, 阻止前进/差速前进指令, 但允许 stop/backward
+  if (localAvoidActive) {
+    if (strcmp(cmd, "stop") == 0) {
+      stopMotors();
+      return;
+    }
+    if (strcmp(cmd, "backward") == 0) {
+      speedPwm = spd; bwd(spd);
+      return;
+    }
+    // 忽略 forward/left/right/diff 前进指令
+    Serial.printf("[CMD] BLOCKED by local avoid: %s\n", cmd);
+    return;
+  }
 
   if (strcmp(cmd, "forward") == 0)       { speedPwm = spd; fwd(spd); }
   else if (strcmp(cmd, "backward") == 0)  { speedPwm = spd; bwd(spd); }
   else if (strcmp(cmd, "left") == 0)      { speedPwm = spd; rotL(spd); }
   else if (strcmp(cmd, "right") == 0)     { speedPwm = spd; rotR(spd); }
   else if (strcmp(cmd, "stop") == 0)      { stopMotors(); }
+  else if (strcmp(cmd, "diff") == 0) {
+    int pwmL = doc["pwm_l"] | spd;
+    int pwmR = doc["pwm_r"] | spd;
+    diffDrive(pwmL, pwmR);
+  }
   else { Serial.printf("[CMD] unknown: %s\n", cmd); }
 }
 
@@ -515,9 +583,10 @@ void sendTelemetry() {
   String finalJson;
   serializeJson(doc, finalJson);
 
-  // TODO: AES 加密暂时禁用, 调通管道后再启用
+  // AES-128 CBC 加密 (需烧录修复iv的固件后启用)
   // String encrypted = aesEncrypt(finalJson.c_str());
-  // 用 PLAIN: 前缀标记明文数据
+  // String payload = encrypted;
+  // 临时明文模式 (AES修复后切换回加密)
   String payload = "PLAIN:" + finalJson;
 
   // 发布
@@ -635,6 +704,42 @@ void loop() {
   // MQTT 循环 (处理收发, 非阻塞)
   if (mqttConnected) {
     mqtt.loop();
+  }
+
+  // ═══ 本地实时避障 (100ms 检查一次, 毫秒级响应) ═══
+  if (now - tLocalAvoid >= LOCAL_AVOID_MS) {
+    tLocalAvoid = now;
+    float usCm = readUltrasonic();
+    int irL = digitalRead(IR_L_PIN);
+    int irR = digitalRead(IR_R_PIN);
+
+    if (usCm > 0 && usCm < LOCAL_CRITICAL_CM) {
+      // 紧急停车: < 20cm
+      stopMotors();
+      localAvoidActive = true;
+      Serial.printf("[LOCAL-AVOID] EMERGENCY STOP! us=%.1fcm\n", usCm);
+    } else if (usCm > 0 && usCm < LOCAL_SAFE_CM) {
+      // 避障绕行: 20~50cm
+      localAvoidActive = true;
+      if (irL && !irR) {
+        // 左侧障碍 → 右转
+        diffDrive(200, 0);
+        Serial.printf("[LOCAL-AVOID] RIGHT TURN us=%.1f irL=%d\n", usCm, irL);
+      } else if (irR && !irL) {
+        // 右侧障碍 → 左转
+        diffDrive(0, 200);
+        Serial.printf("[LOCAL-AVOID] LEFT TURN us=%.1f irR=%d\n", usCm, irR);
+      } else {
+        // 前方障碍或双侧 → 后退
+        diffDrive(-200, -200);
+        Serial.printf("[LOCAL-AVOID] BACKWARD us=%.1fcm\n", usCm);
+      }
+    } else if (localAvoidActive) {
+      // 障碍清除, 恢复正常 (不再覆盖)
+      localAvoidActive = false;
+      Serial.println("[LOCAL-AVOID] CLEAR, resuming normal control");
+      // 不主动恢复运动, 等待后端或手动指令
+    }
   }
 
   // 遥测上报
