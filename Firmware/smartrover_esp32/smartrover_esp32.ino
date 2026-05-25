@@ -32,19 +32,19 @@
 
 // ═══ 配置 ═══
 
-const char* WIFI_SSID     = "REDMI K80 Ultra";
+const char* WIFI_SSID     = "REDMI K80";
 const char* WIFI_PASS     = "88888888";
-const char* MQTT_HOST     = "10.32.44.189";
+const char* MQTT_HOST     = "10.98.142.61";
 const int   MQTT_PORT     = 1883;
 const char* MQTT_USER     = "";
 const char* MQTT_PASS     = "";
-const char* DEVICE_ID     = "10.32.44.189";
-const char* DEVICE_SECRET = "72d579dd57432ef9c9614b1261a0a5ca3de4e8d0135f961b8c826f576b65f21f";
+const char* DEVICE_ID     = "smartrover_666";
+const char* DEVICE_SECRET = "967dd871b6406129dfb3833058a945da6f0bd556c94ee1c7220c6fbd31743725";
 const char* AES_KEY_STR   = "SmartRover2026!!";  // 16 bytes
 
-const unsigned long TELEMETRY_MS = 2000;
+unsigned long TELEMETRY_MS = 2000;
 const unsigned long HEARTBEAT_MS = 15000;
-const int WIFI_SCAN_MAX_APS = 6;  // 上报最多 AP 数
+int WIFI_SCAN_MAX_APS = 6;
 
 // ═══ 引脚定义 ═══
 
@@ -133,13 +133,14 @@ unsigned long avoidStateStart = 0;      // 当前避障状态开始时间
 unsigned long tLocalAvoid = 0;
 int avoidTurnDir = -1;                  // 当前转向方向: 1=右转, -1=左转
 int avoidTurnRetries = 0;               // 探路重试次数
-const unsigned long LOCAL_AVOID_MS = 100;   // 检查间隔
-const float LOCAL_CRITICAL_CM = 10.0;       // 紧急停车距离
-const float LOCAL_WARN_CM = 15.0;           // 后退距离
-const float LOCAL_SAFE_CM = 30.0;           // 安全距离 (可以前进)
-const unsigned long BACKWARD_TIMEOUT_MS = 1000;  // 后退最长1秒
-const unsigned long TURN_TIMEOUT_MS = 800;       // 转向最长0.8秒
-const int MAX_PROBE_RETRIES = 6;                 // 探路最多6次 (约360度)
+unsigned long LOCAL_AVOID_MS = 100;     // 检查间隔
+float LOCAL_CRITICAL_CM = 10.0;         // 紧急停车距离
+float LOCAL_WARN_CM = 15.0;             // 后退距离
+float LOCAL_SAFE_CM = 30.0;             // 安全距离 (可以前进)
+unsigned long BACKWARD_TIMEOUT_MS = 1000;  // 后退最长1秒
+unsigned long TURN_TIMEOUT_MS = 800;       // 转向最长0.8秒
+int MAX_PROBE_RETRIES = 6;                 // 探路最多6次 (约360度)
+bool avoidEnabled = true;               // 避障开关 (前端可远程控制)
 
 // 巡航恢复: 记录最后的diff指令, 避障结束后自动恢复
 bool inCruiseMode = false;            // 是否处于巡航模式 (收到diff指令时置true, stop时置false)
@@ -495,8 +496,8 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
   // DC电机启动死区: PWM < 150 时电机只嗡嗡响不转, 需要最低150才能克服静摩擦
   if (spd > 0 && spd < 150) spd = 150;
 
-  // 本地避障激活时的指令拦截
-  if (avoidState != AVOID_NONE) {
+  // 本地避障激活时的指令拦截 (避障禁用时不拦截)
+  if (avoidEnabled && avoidState != AVOID_NONE) {
     if (strcmp(cmd, "stop") == 0) {
       stopMotors();
       return;
@@ -523,6 +524,51 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
     lastCruisePwmL = pwmL;
     lastCruisePwmR = pwmR;
     diffDrive(pwmL, pwmR);
+  }
+  else if (strcmp(cmd, "config") == 0) {
+    JsonObject params = doc["params"];
+    if (params.isNull()) {
+      Serial.println("[CONFIG] No params field, ignoring");
+    } else {
+      if (params.containsKey("speed_pwm"))          speedPwm = constrain(params["speed_pwm"].as<int>(), 150, 255);
+      if (params.containsKey("telemetry_ms"))       TELEMETRY_MS = constrain(params["telemetry_ms"].as<unsigned long>(), 1000UL, 10000UL);
+      if (params.containsKey("critical_cm"))        LOCAL_CRITICAL_CM = constrain(params["critical_cm"].as<float>(), 5.0f, 20.0f);
+      if (params.containsKey("warn_cm"))            LOCAL_WARN_CM = constrain(params["warn_cm"].as<float>(), 10.0f, 40.0f);
+      if (params.containsKey("safe_cm"))            LOCAL_SAFE_CM = constrain(params["safe_cm"].as<float>(), 20.0f, 80.0f);
+      if (params.containsKey("backward_timeout_ms"))BACKWARD_TIMEOUT_MS = constrain(params["backward_timeout_ms"].as<unsigned long>(), 300UL, 3000UL);
+      if (params.containsKey("turn_timeout_ms"))    TURN_TIMEOUT_MS = constrain(params["turn_timeout_ms"].as<unsigned long>(), 200UL, 2000UL);
+      if (params.containsKey("max_probe_retries"))  MAX_PROBE_RETRIES = constrain(params["max_probe_retries"].as<int>(), 1, 12);
+      if (params.containsKey("avoid_enabled")) {
+        bool newAvoid = params["avoid_enabled"].as<bool>();
+        if (avoidEnabled && !newAvoid) {
+          avoidState = AVOID_NONE;
+          avoidTurnRetries = 0;
+        }
+        avoidEnabled = newAvoid;
+      }
+      if (params.containsKey("wifi_scan_max_aps"))  WIFI_SCAN_MAX_APS = constrain(params["wifi_scan_max_aps"].as<int>(), 2, 10);
+      if (LOCAL_WARN_CM <= LOCAL_CRITICAL_CM) LOCAL_WARN_CM = LOCAL_CRITICAL_CM + 5.0f;
+      if (LOCAL_SAFE_CM <= LOCAL_WARN_CM)     LOCAL_SAFE_CM = LOCAL_WARN_CM + 10.0f;
+      Serial.printf("[CONFIG] Updated: spd=%d tel=%lu crit=%.1f warn=%.1f safe=%.1f bwd=%lu turn=%lu probe=%d avoid=%d\n",
+                    speedPwm, TELEMETRY_MS, LOCAL_CRITICAL_CM, LOCAL_WARN_CM, LOCAL_SAFE_CM,
+                    BACKWARD_TIMEOUT_MS, TURN_TIMEOUT_MS, MAX_PROBE_RETRIES, avoidEnabled);
+      String ackTopic = "config_ack/" + String(DEVICE_ID);
+      JsonDocument ackDoc;
+      ackDoc["type"] = "config_ack";
+      ackDoc["speed_pwm"] = speedPwm;
+      ackDoc["telemetry_ms"] = (int)TELEMETRY_MS;
+      ackDoc["critical_cm"] = serialized(String(LOCAL_CRITICAL_CM, 1));
+      ackDoc["warn_cm"] = serialized(String(LOCAL_WARN_CM, 1));
+      ackDoc["safe_cm"] = serialized(String(LOCAL_SAFE_CM, 1));
+      ackDoc["backward_timeout_ms"] = (int)BACKWARD_TIMEOUT_MS;
+      ackDoc["turn_timeout_ms"] = (int)TURN_TIMEOUT_MS;
+      ackDoc["max_probe_retries"] = MAX_PROBE_RETRIES;
+      ackDoc["avoid_enabled"] = avoidEnabled;
+      ackDoc["wifi_scan_max_aps"] = WIFI_SCAN_MAX_APS;
+      String ackJson;
+      serializeJson(ackDoc, ackJson);
+      mqtt.publish(ackTopic.c_str(), ackJson.c_str());
+    }
   }
   else { Serial.printf("[CMD] unknown: %s\n", cmd); }
 }
@@ -580,8 +626,8 @@ void sendTelemetry() {
   float temp = cachedTemp;
   float humi = cachedHumi;
   float usCm = readUltrasonic();
-  int irL = digitalRead(IR_L_PIN);
-  int irR = digitalRead(IR_R_PIN);
+  int irL = !digitalRead(IR_L_PIN);
+  int irR = !digitalRead(IR_R_PIN);
   readMPU6050();
 
   // WiFi 扫描 (每 30 秒触发一次异步扫描, 不阻塞)
@@ -762,15 +808,15 @@ void loop() {
     mqtt.loop();
   }
 
-  // ═══ 本地实时避障 — 状态机 (100ms 检查, 仅电机运行时生效) ═══
+  // ═══ 本地实时避障 — 状态机 (100ms 检查, 仅电机运行时且避障开启时生效) ═══
   if (now - tLocalAvoid >= LOCAL_AVOID_MS) {
     tLocalAvoid = now;
 
-    // 仅在电机运行时才做避障 (静止时不主动启动电机)
-    if (motorRunning || avoidState != AVOID_NONE) {
+    // 仅在电机运行且避障开启时才做避障 (静止时不主动启动电机)
+    if (avoidEnabled && (motorRunning || avoidState != AVOID_NONE)) {
       float usCm = readUltrasonic();
-      int irL = digitalRead(IR_L_PIN);
-      int irR = digitalRead(IR_R_PIN);
+      int irL = !digitalRead(IR_L_PIN);
+      int irR = !digitalRead(IR_R_PIN);
 
       switch (avoidState) {
         case AVOID_NONE:
@@ -814,18 +860,17 @@ void loop() {
           break;
 
         case AVOID_EMERGENCY:
-          // 紧急停车中, 等待距离拉开
           if (usCm > LOCAL_WARN_CM) {
             if (inCruiseMode) {
-              // 巡航模式: 自动转向探路
-              avoidTurnDir = (irL && !irR) ? 1 : -1;
+              if (irL && !irR) avoidTurnDir = 1;
+              else if (irR && !irL) avoidTurnDir = -1;
+              else avoidTurnDir = 1;
               avoidState = AVOID_TURN;
               avoidStateStart = now;
               if (avoidTurnDir == 1) diffDrive(200, -200);
               else diffDrive(-200, 200);
               Serial.printf("[AVOID] EMER→TURN dir=%d\n", avoidTurnDir);
             } else {
-              // 手动模式: 距离安全后直接恢复, 等待用户指令
               avoidState = AVOID_NONE;
               Serial.println("[AVOID] EMER→CLEAR, waiting for command");
             }
@@ -833,20 +878,24 @@ void loop() {
           break;
 
         case AVOID_BACKWARD:
-          // 后退中, 检查超时
           if (now - avoidStateStart >= BACKWARD_TIMEOUT_MS) {
-            avoidTurnDir = (irL && !irR) ? 1 : ((irR && !irL) ? -1 : -1);
+            if (irL && !irR) avoidTurnDir = 1;
+            else if (irR && !irL) avoidTurnDir = -1;
+            else avoidTurnDir = 1;
             avoidState = AVOID_TURN;
             avoidStateStart = now;
             if (avoidTurnDir == 1) diffDrive(200, -200);
             else diffDrive(-200, 200);
             Serial.printf("[AVOID] BACK→TURN dir=%d\n", avoidTurnDir);
           } else if (usCm > LOCAL_SAFE_CM) {
-            avoidTurnDir = -1;
+            if (irL && !irR) avoidTurnDir = 1;
+            else if (irR && !irL) avoidTurnDir = -1;
+            else avoidTurnDir = 1;
             avoidState = AVOID_TURN;
             avoidStateStart = now;
-            diffDrive(-200, 200);
-            Serial.println("[AVOID] BACK→TURN (clear)");
+            if (avoidTurnDir == 1) diffDrive(200, -200);
+            else diffDrive(-200, 200);
+            Serial.printf("[AVOID] BACK→TURN (clear) dir=%d\n", avoidTurnDir);
           }
           break;
 
@@ -888,8 +937,14 @@ void loop() {
             avoidTurnRetries = 0;
             Serial.println("[AVOID] PROBE→GIVE UP, no path found, waiting for command");
           } else {
-            // 前方仍不安全, 继续同方向转向
+            // 前方仍不安全
             avoidTurnRetries++;
+            // 超过一半重试次数仍未找到出路, 换方向尝试
+            if (avoidTurnRetries > MAX_PROBE_RETRIES / 2) {
+              avoidTurnDir = -avoidTurnDir;
+              Serial.printf("[AVOID] PROBE→SWITCH dir=%d (retry=%d > half of %d)\n",
+                            avoidTurnDir, avoidTurnRetries, MAX_PROBE_RETRIES);
+            }
             avoidState = AVOID_TURN;
             avoidStateStart = now;
             if (avoidTurnDir == 1) diffDrive(200, -200);

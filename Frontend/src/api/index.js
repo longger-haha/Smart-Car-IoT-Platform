@@ -61,6 +61,12 @@ export const vehicleAPI = {
       command,
       speed_pwm: speedPwm,
     }),
+  sendConfig: (deviceId, params) =>
+    request.post('/vehicle/command', {
+      device_id: deviceId,
+      command: 'config',
+      params,
+    }),
   // 后端导航引擎巡航
   startCruise: (deviceId, waypoints, speedPwm = 150) =>
     request.post('/vehicle/cruise/start', {

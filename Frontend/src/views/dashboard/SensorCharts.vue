@@ -18,9 +18,11 @@
         />
       </div>
 
-      <div class="chart-container" ref="tempChartRef"></div>
-      <div class="chart-container" ref="humidityChartRef"></div>
-      <div class="chart-container" ref="ultrasonicChartRef"></div>
+      <div class="charts-row">
+        <div class="chart-col" ref="tempChartRef"></div>
+        <div class="chart-col" ref="humidityChartRef"></div>
+        <div class="chart-col" ref="ultrasonicChartRef"></div>
+      </div>
     </el-card>
   </div>
 </template>
@@ -108,18 +110,21 @@ const updateCharts = () => {
     }
   }
 
+  const sharedGrid = { left: '12%', right: '5%', bottom: '22%', top: '24%' }
+  const sharedXAxis = {
+    type: 'category',
+    data: timeLabels.value,
+    axisLabel: { fontSize: 9, rotate: 30 }
+  }
+
   const tempOption = {
     title: {
       text: '温度 (°C)',
       left: 'center',
-      textStyle: { fontSize: 14 }
+      textStyle: { fontSize: 13, fontWeight: 600 }
     },
     tooltip: { trigger: 'axis' },
-    xAxis: {
-      type: 'category',
-      data: timeLabels.value,
-      axisLabel: { fontSize: 10, rotate: 45 }
-    },
+    xAxis: sharedXAxis,
     yAxis: {
       type: 'value',
       min: function(value) {
@@ -139,21 +144,17 @@ const updateCharts = () => {
         ])
       }
     }],
-    grid: { left: '10%', right: '5%', bottom: '25%', top: '20%' }
+    grid: sharedGrid
   }
 
   const humidityOption = {
     title: {
       text: '湿度 (%)',
       left: 'center',
-      textStyle: { fontSize: 14 }
+      textStyle: { fontSize: 13, fontWeight: 600 }
     },
     tooltip: { trigger: 'axis' },
-    xAxis: {
-      type: 'category',
-      data: timeLabels.value,
-      axisLabel: { fontSize: 10, rotate: 45 }
-    },
+    xAxis: sharedXAxis,
     yAxis: {
       type: 'value',
       min: 0,
@@ -172,21 +173,17 @@ const updateCharts = () => {
         ])
       }
     }],
-    grid: { left: '10%', right: '5%', bottom: '25%', top: '20%' }
+    grid: sharedGrid
   }
 
   const ultrasonicOption = {
     title: {
-      text: '超声波距离 (cm)',
+      text: '超声波 (cm)',
       left: 'center',
-      textStyle: { fontSize: 14 }
+      textStyle: { fontSize: 13, fontWeight: 600 }
     },
     tooltip: { trigger: 'axis' },
-    xAxis: {
-      type: 'category',
-      data: timeLabels.value,
-      axisLabel: { fontSize: 10, rotate: 45 }
-    },
+    xAxis: sharedXAxis,
     yAxis: {
       type: 'value'
     },
@@ -210,7 +207,7 @@ const updateCharts = () => {
         lineStyle: { color: '#F56C6C', type: 'dashed' }
       }
     }],
-    grid: { left: '10%', right: '10%', bottom: '25%', top: '25%' }
+    grid: { left: '12%', right: '10%', bottom: '22%', top: '24%' }
   }
 
   if (tempChart) tempChart.setOption(tempOption, true)
@@ -266,9 +263,23 @@ onUnmounted(() => {
   margin-bottom: 15px;
 }
 
-.chart-container {
-  width: 100%;
-  height: 150px;
-  margin-bottom: 15px;
+.charts-row {
+  display: flex;
+  gap: 12px;
+}
+
+.chart-col {
+  flex: 1;
+  min-width: 0;
+  height: 220px;
+}
+
+@media (max-width: 992px) {
+  .charts-row {
+    flex-direction: column;
+  }
+  .chart-col {
+    height: 160px;
+  }
 }
 </style>

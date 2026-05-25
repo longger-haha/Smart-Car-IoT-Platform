@@ -29,7 +29,7 @@ from flask_jwt_extended import jwt_required
 
 vehicle_bp = Blueprint('vehicle', __name__)
 
-VALID_COMMANDS = {'forward', 'backward', 'left', 'right', 'stop', 'diff'}
+VALID_COMMANDS = {'forward', 'backward', 'left', 'right', 'stop', 'diff', 'config'}
 MAX_WAYPOINTS = 50
 MIN_WAYPOINTS = 2
 
@@ -57,6 +57,22 @@ def send_command():
             'cmd':   'diff',
             'pwm_l': data.get('pwm_l', 0),
             'pwm_r': data.get('pwm_r', 0),
+        }
+    elif command == 'config':
+        params = data.get('params', {})
+        if not params:
+            return jsonify({'error': 'config 指令必须包含 params 字段'}), 400
+        allowed_keys = {
+            'speed_pwm', 'telemetry_ms', 'critical_cm', 'warn_cm', 'safe_cm',
+            'backward_timeout_ms', 'turn_timeout_ms', 'max_probe_retries',
+            'avoid_enabled', 'wifi_scan_max_aps',
+        }
+        filtered = {k: v for k, v in params.items() if k in allowed_keys}
+        if not filtered:
+            return jsonify({'error': f'params 中无合法参数，合法键: {sorted(allowed_keys)}'}), 400
+        payload = {
+            'cmd':    'config',
+            'params': filtered,
         }
     else:
         payload = {
@@ -112,6 +128,12 @@ def get_latest_position(device_id: str):
         return jsonify({'error': f'设备 {device_id!r} 暂无位置数据'}), 404
 
     result = point.to_dict()
+
+    # 前端使用 lat/lng 短名称, 添加别名兼容
+    if result.get('latitude') is not None:
+        result['lat'] = float(result['latitude'])
+    if result.get('longitude') is not None:
+        result['lng'] = float(result['longitude'])
 
     # 附加设备在线状态
     from src.models.device import Device

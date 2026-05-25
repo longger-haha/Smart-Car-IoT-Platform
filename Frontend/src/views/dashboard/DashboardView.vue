@@ -56,14 +56,14 @@
       </el-col>
     </el-row>
 
-    <el-row :gutter="16" style="margin-top: 20px;">
+    <el-row :gutter="16" class="section-row">
       <el-col :span="24">
         <SensorCharts :telemetry-data="dashPositionData ?? {}" />
       </el-col>
     </el-row>
 
-    <el-row :gutter="16" style="margin-top: 20px;">
-      <el-col :xs="24" :lg="16">
+    <el-row :gutter="16" class="section-row">
+      <el-col :xs="24" :lg="14">
         <el-card shadow="never">
           <template #header>
             <span>设备状态分布</span>
@@ -71,7 +71,7 @@
           <div ref="pieChartRef" class="chart-container"></div>
         </el-card>
       </el-col>
-      <el-col :xs="24" :lg="8">
+      <el-col :xs="24" :lg="10">
         <el-card shadow="never">
           <template #header>
             <span>安全指标</span>
@@ -93,7 +93,7 @@
       </el-col>
     </el-row>
 
-    <el-row :gutter="16" style="margin-top: 20px;">
+    <el-row :gutter="16" class="section-row">
       <el-col :span="24">
         <el-card shadow="never">
           <template #header>
@@ -126,7 +126,7 @@
       </el-col>
     </el-row>
 
-    <el-row :gutter="16" style="margin-top: 20px;">
+    <el-row :gutter="16" class="section-row">
       <el-col :span="24">
         <el-card shadow="never">
           <template #header>
@@ -469,6 +469,10 @@ onUnmounted(() => {
 <style scoped>
 .dashboard {
   max-width: 1400px;
+}
+
+.section-row {
+  margin-top: 16px;
 }
 
 .page-header {

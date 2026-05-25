@@ -1,6 +1,5 @@
 <template>
   <div class="control-panel">
-    <!-- 顶部栏 -->
     <div class="top-bar">
       <h2 class="page-title">车辆控制台</h2>
       <div class="top-bar-right">
@@ -15,9 +14,7 @@
     </div>
 
     <el-row :gutter="16">
-      <!-- 左侧：控制 + 传感器 -->
-      <el-col :xs="24" :sm="8" :md="6">
-        <!-- 手动控制 -->
+      <el-col :xs="24" :md="8">
         <el-card v-if="controlMode === 'manual'" shadow="hover" class="panel-card">
           <template #header><span>方向控制</span></template>
           <div class="dpad-container">
@@ -49,7 +46,6 @@
           </div>
         </el-card>
 
-        <!-- 自动巡航控制 -->
         <el-card v-else shadow="hover" class="panel-card">
           <template #header>
             <span>巡航控制</span>
@@ -88,7 +84,6 @@
           <div v-else class="cruise-hint">选择设备后启动自动巡航</div>
         </el-card>
 
-        <!-- 速度挡位（手动/巡航共用） -->
         <el-card shadow="hover" class="panel-card">
           <template #header><span>速度挡位</span></template>
           <div class="gear-section">
@@ -108,52 +103,172 @@
           </div>
         </el-card>
 
-        <!-- 传感器数据 -->
         <el-card shadow="hover" class="panel-card">
           <template #header><span>传感器数据</span></template>
-          <div class="sensor-list">
-            <div class="sensor-row">
-              <span class="sensor-label">超声波</span>
-              <span class="sensor-value" :class="{ 'sensor-warn': positionData?.ultrasonic_cm < 50 }">{{ positionData?.ultrasonic_cm ?? '--' }}<small>cm</small></span>
+          <div class="sensor-grid">
+            <div class="sensor-card" :class="{ 'sensor-card-warn': positionData?.ultrasonic_cm > 0 && positionData?.ultrasonic_cm < 50 }">
+              <div class="sensor-card-icon" style="background:linear-gradient(135deg,#3b82f6,#2563eb);">
+                <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="#fff" stroke-width="2"><path d="M12 2L2 22h20L12 2z"/><path d="M12 16v-4"/><path d="M12 12h.01"/></svg>
+              </div>
+              <div class="sensor-card-body">
+                <span class="sensor-card-label">超声波</span>
+                <span class="sensor-card-value">{{ positionData?.ultrasonic_cm ?? '--' }}<small>cm</small></span>
+              </div>
             </div>
-            <div class="sensor-row">
-              <span class="sensor-label">红外左</span>
-              <span class="sensor-value" :style="{ color: positionData?.ir_l ? '#f56c6c' : '#67c23a' }">{{ positionData?.ir_l ? '障碍' : '安全' }}</span>
+            <div class="sensor-card" :class="positionData?.ir_l ? 'sensor-card-danger' : 'sensor-card-ok'">
+              <div class="sensor-card-icon" :style="{ background: positionData?.ir_l ? 'linear-gradient(135deg,#f87171,#ef4444)' : 'linear-gradient(135deg,#34d399,#10b981)' }">
+                <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="#fff" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>
+              </div>
+              <div class="sensor-card-body">
+                <span class="sensor-card-label">红外左</span>
+                <span class="sensor-card-value">{{ positionData?.ir_l ? '障碍' : '安全' }}</span>
+              </div>
             </div>
-            <div class="sensor-row">
-              <span class="sensor-label">红外右</span>
-              <span class="sensor-value" :style="{ color: positionData?.ir_r ? '#f56c6c' : '#67c23a' }">{{ positionData?.ir_r ? '障碍' : '安全' }}</span>
+            <div class="sensor-card" :class="positionData?.ir_r ? 'sensor-card-danger' : 'sensor-card-ok'">
+              <div class="sensor-card-icon" :style="{ background: positionData?.ir_r ? 'linear-gradient(135deg,#f87171,#ef4444)' : 'linear-gradient(135deg,#34d399,#10b981)' }">
+                <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="#fff" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>
+              </div>
+              <div class="sensor-card-body">
+                <span class="sensor-card-label">红外右</span>
+                <span class="sensor-card-value">{{ positionData?.ir_r ? '障碍' : '安全' }}</span>
+              </div>
             </div>
-            <div class="sensor-row">
-              <span class="sensor-label">航向角</span>
-              <span class="sensor-value">{{ positionData?.imu_heading != null ? positionData.imu_heading + '°' : '--' }}</span>
+            <div class="sensor-card">
+              <div class="sensor-card-icon" style="background:linear-gradient(135deg,#a78bfa,#7c3aed);">
+                <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="#fff" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 2a15 15 0 0 1 0 20M12 2a15 15 0 0 0 0 20M2 12h20"/></svg>
+              </div>
+              <div class="sensor-card-body">
+                <span class="sensor-card-label">航向角</span>
+                <span class="sensor-card-value">{{ positionData?.imu_heading != null ? positionData.imu_heading + '°' : '--' }}</span>
+              </div>
             </div>
-            <div class="sensor-row">
-              <span class="sensor-label">速度</span>
-              <span class="sensor-value">{{ positionData?.speed_pwm ?? '--' }}<small>PWM</small></span>
+            <div class="sensor-card">
+              <div class="sensor-card-icon" style="background:linear-gradient(135deg,#fbbf24,#f59e0b);">
+                <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="#fff" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+              </div>
+              <div class="sensor-card-body">
+                <span class="sensor-card-label">速度</span>
+                <span class="sensor-card-value">{{ positionData?.speed_pwm ?? '--' }}<small>PWM</small></span>
+              </div>
             </div>
-            <div class="sensor-row">
-              <span class="sensor-label">温度</span>
-              <span class="sensor-value">{{ positionData?.temperature ? positionData.temperature + '°C' : '--' }}</span>
+            <div class="sensor-card">
+              <div class="sensor-card-icon" style="background:linear-gradient(135deg,#f87171,#ef4444);">
+                <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="#fff" stroke-width="2"><path d="M14 14.76V3.5a2.5 2.5 0 0 0-5 0v11.26a4.5 4.5 0 1 0 5 0z"/></svg>
+              </div>
+              <div class="sensor-card-body">
+                <span class="sensor-card-label">温度</span>
+                <span class="sensor-card-value">{{ positionData?.temperature ? positionData.temperature + '°C' : '--' }}</span>
+              </div>
             </div>
-            <div class="sensor-row">
-              <span class="sensor-label">湿度</span>
-              <span class="sensor-value">{{ positionData?.humidity ? positionData.humidity + '%' : '--' }}</span>
+            <div class="sensor-card">
+              <div class="sensor-card-icon" style="background:linear-gradient(135deg,#60a5fa,#3b82f6);">
+                <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="#fff" stroke-width="2"><path d="M12 2.69l5.66 5.66a8 8 0 1 1-11.31 0z"/></svg>
+              </div>
+              <div class="sensor-card-body">
+                <span class="sensor-card-label">湿度</span>
+                <span class="sensor-card-value">{{ positionData?.humidity ? positionData.humidity + '%' : '--' }}</span>
+              </div>
             </div>
-            <div class="sensor-row">
-              <span class="sensor-label">卫星数</span>
-              <span class="sensor-value">{{ positionData?.satellites ?? '--' }}</span>
+            <div class="sensor-card">
+              <div class="sensor-card-icon" style="background:linear-gradient(135deg,#34d399,#10b981);">
+                <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="#fff" stroke-width="2"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>
+              </div>
+              <div class="sensor-card-body">
+                <span class="sensor-card-label">卫星数</span>
+                <span class="sensor-card-value">{{ positionData?.satellites ?? '--' }}</span>
+              </div>
             </div>
-            <div class="sensor-row">
-              <span class="sensor-label">坐标</span>
-              <span class="sensor-value sensor-coord">{{ positionData?.lat ? Number(positionData.lat).toFixed(5) : '--' }}, {{ positionData?.lng ? Number(positionData.lng).toFixed(5) : '--' }}</span>
+            <div class="sensor-card sensor-card-wide">
+              <div class="sensor-card-icon" style="background:linear-gradient(135deg,#94a3b8,#64748b);">
+                <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="#fff" stroke-width="2"><circle cx="12" cy="10" r="3"/><path d="M12 21.7C17.3 17 20 13 20 10a8 8 0 1 0-16 0c0 3 2.7 7 8 11.7z"/></svg>
+              </div>
+              <div class="sensor-card-body">
+                <span class="sensor-card-label">坐标</span>
+                <span class="sensor-card-value sensor-coord">{{ positionData?.lat ? Number(positionData.lat).toFixed(5) : '--' }}, {{ positionData?.lng ? Number(positionData.lng).toFixed(5) : '--' }}</span>
+              </div>
             </div>
           </div>
         </el-card>
+
+        <el-card shadow="hover" class="panel-card">
+          <template #header>
+            <div class="config-header">
+              <span>参数配置</span>
+              <el-button type="primary" size="small" :loading="configLoading" :disabled="!selectedDeviceId" @click="applyConfig">应用</el-button>
+            </div>
+          </template>
+          <el-collapse v-model="configActiveNames" class="config-collapse">
+            <el-collapse-item title="避障参数 (P0)" name="p0">
+              <div class="config-row">
+                <span class="config-label">避障开关</span>
+                <el-switch v-model="configForm.avoid_enabled" active-text="开" inactive-text="关" />
+              </div>
+              <div class="config-row">
+                <span class="config-label">紧急停车距离</span>
+                <div class="config-slider-wrap">
+                  <el-slider v-model="configForm.critical_cm" :min="5" :max="20" :step="1" :disabled="!configForm.avoid_enabled" />
+                  <span class="config-val">{{ configForm.critical_cm }} cm</span>
+                </div>
+              </div>
+              <div class="config-row">
+                <span class="config-label">后退避障距离</span>
+                <div class="config-slider-wrap">
+                  <el-slider v-model="configForm.warn_cm" :min="10" :max="40" :step="1" :disabled="!configForm.avoid_enabled" />
+                  <span class="config-val">{{ configForm.warn_cm }} cm</span>
+                </div>
+              </div>
+              <div class="config-row">
+                <span class="config-label">安全距离</span>
+                <div class="config-slider-wrap">
+                  <el-slider v-model="configForm.safe_cm" :min="20" :max="80" :step="1" :disabled="!configForm.avoid_enabled" />
+                  <span class="config-val">{{ configForm.safe_cm }} cm</span>
+                </div>
+              </div>
+            </el-collapse-item>
+            <el-collapse-item title="基础参数 (P1)" name="p1">
+              <div class="config-row">
+                <span class="config-label">默认速度</span>
+                <div class="config-slider-wrap">
+                  <el-slider v-model="configForm.speed_pwm" :min="150" :max="255" :step="5" />
+                  <span class="config-val">{{ configForm.speed_pwm }}</span>
+                </div>
+              </div>
+              <div class="config-row">
+                <span class="config-label">遥测间隔</span>
+                <div class="config-slider-wrap">
+                  <el-slider v-model="configForm.telemetry_ms" :min="1000" :max="10000" :step="500" />
+                  <span class="config-val">{{ (configForm.telemetry_ms / 1000).toFixed(1) }}s</span>
+                </div>
+              </div>
+            </el-collapse-item>
+            <el-collapse-item title="避障超时 (P2)" name="p2">
+              <div class="config-row">
+                <span class="config-label">后退超时</span>
+                <div class="config-slider-wrap">
+                  <el-slider v-model="configForm.backward_timeout_ms" :min="300" :max="3000" :step="100" :disabled="!configForm.avoid_enabled" />
+                  <span class="config-val">{{ (configForm.backward_timeout_ms / 1000).toFixed(1) }}s</span>
+                </div>
+              </div>
+              <div class="config-row">
+                <span class="config-label">转向超时</span>
+                <div class="config-slider-wrap">
+                  <el-slider v-model="configForm.turn_timeout_ms" :min="200" :max="2000" :step="100" :disabled="!configForm.avoid_enabled" />
+                  <span class="config-val">{{ (configForm.turn_timeout_ms / 1000).toFixed(1) }}s</span>
+                </div>
+              </div>
+              <div class="config-row">
+                <span class="config-label">探路重试次数</span>
+                <div class="config-slider-wrap">
+                  <el-slider v-model="configForm.max_probe_retries" :min="1" :max="12" :step="1" :disabled="!configForm.avoid_enabled" />
+                  <span class="config-val">{{ configForm.max_probe_retries }} 次</span>
+                </div>
+              </div>
+            </el-collapse-item>
+          </el-collapse>
+        </el-card>
       </el-col>
 
-      <!-- 右侧：地图 + 事件 -->
-      <el-col :xs="24" :sm="16" :md="18">
+      <el-col :xs="24" :md="16">
         <el-card shadow="hover" class="panel-card">
           <template #header>
             <div class="map-header">
@@ -181,7 +296,6 @@
           </div>
         </el-card>
 
-        <!-- 导航事件时间线 -->
         <el-card shadow="hover" class="panel-card">
           <template #header>
             <div class="map-header">
@@ -213,7 +327,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue'
+import { ref, reactive, computed, onMounted, onUnmounted, nextTick } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Top, Bottom, ArrowLeft, ArrowRight, VideoPause } from '@element-plus/icons-vue'
 import AMapLoader from '@amap/amap-jsapi-loader'
@@ -244,6 +358,7 @@ const gearOptions = [
 ]
 const routeLoading = ref(false)
 const mapLoading = ref(false)
+const configActiveNames = ref(['p0'])
 
 let map = null
 let trajectoryPolyline = null
@@ -252,6 +367,19 @@ let positionMarker = null
 const navEvents = ref([])
 const cruiseStatus = ref(null)
 const positionData = ref(null)
+const configLoading = ref(false)
+
+const configForm = reactive({
+  avoid_enabled: true,
+  critical_cm: 10,
+  warn_cm: 15,
+  safe_cm: 30,
+  speed_pwm: 200,
+  telemetry_ms: 2000,
+  backward_timeout_ms: 1000,
+  turn_timeout_ms: 800,
+  max_probe_retries: 6,
+})
 
 let posPollTimer = null
 let navEventTimer = null
@@ -345,6 +473,27 @@ async function sendCmd(cmd) {
 
 function onGearChange(gear) {
   ElMessage.success(`切换到${gear === 'low' ? '低速' : gear === 'mid' ? '中速' : '高速'}挡 (PWM ${SPEED_MAP[gear]})`)
+}
+
+async function applyConfig() {
+  if (!selectedDeviceId.value) return
+  if (configForm.warn_cm <= configForm.critical_cm) {
+    ElMessage.warning(`后退距离 (${configForm.warn_cm}cm) 必须大于紧急停车距离 (${configForm.critical_cm}cm)`)
+    return
+  }
+  if (configForm.safe_cm <= configForm.warn_cm) {
+    ElMessage.warning(`安全距离 (${configForm.safe_cm}cm) 必须大于后退距离 (${configForm.warn_cm}cm)`)
+    return
+  }
+  configLoading.value = true
+  try {
+    await vehicleAPI.sendConfig(selectedDeviceId.value, { ...configForm })
+    ElMessage.success('配置已下发到设备')
+  } catch (err) {
+    ElMessage.error(err.response?.data?.error || '配置下发失败')
+  } finally {
+    configLoading.value = false
+  }
 }
 
 async function loadDevices() {
@@ -493,7 +642,6 @@ onUnmounted(() => { stopPolling() })
 </script>
 
 <style scoped>
-/* ── 顶部栏 ── */
 .top-bar {
   display: flex; align-items: center; justify-content: space-between;
   margin-bottom: 16px; flex-wrap: wrap; gap: 12px;
@@ -502,10 +650,8 @@ onUnmounted(() => { stopPolling() })
 .top-bar-right { display: flex; align-items: center; gap: 12px; }
 .device-select { width: 200px; }
 
-/* ── 卡片 ── */
 .panel-card { margin-bottom: 16px; }
 
-/* ── 方向键 ── */
 .dpad-container {
   display: flex; flex-direction: column;
   align-items: center; gap: 6px; padding: 4px 0;
@@ -520,21 +666,15 @@ onUnmounted(() => { stopPolling() })
 .dpad-btn .el-icon { font-size: 20px; }
 .dpad-stop { border-radius: 50%; width: 52px; height: 52px; }
 
-/* ── 挡位选择 ── */
 .gear-section { width: 100%; }
-.gear-options {
-  display: flex; gap: 8px; justify-content: center;
-}
+.gear-options { display: flex; gap: 8px; justify-content: center; }
 .gear-item {
   flex: 1; display: flex; flex-direction: column; align-items: center;
   padding: 10px 4px 8px; border-radius: 10px; cursor: pointer;
   border: 2px solid var(--border-color, #dcdfe6);
-  transition: all 0.25s ease;
-  user-select: none;
+  transition: all 0.25s ease; user-select: none;
 }
-.gear-item:hover {
-  border-color: #409eff; background: #ecf5ff;
-}
+.gear-item:hover { border-color: #409eff; background: #ecf5ff; }
 .gear-active {
   border-color: #409eff !important;
   background: linear-gradient(135deg, #ecf5ff 0%, #d9ecff 100%) !important;
@@ -544,7 +684,6 @@ onUnmounted(() => { stopPolling() })
 .gear-name { font-size: 13px; font-weight: 600; color: var(--text-primary); margin-bottom: 2px; }
 .gear-speed { font-size: 11px; color: var(--text-secondary); font-family: monospace; }
 
-/* ── 巡航控制 ── */
 .cruise-actions { display: flex; gap: 8px; margin-bottom: 12px; }
 .cruise-detail { font-size: 13px; }
 .cruise-detail-row {
@@ -556,24 +695,58 @@ onUnmounted(() => { stopPolling() })
 .detail-value { font-weight: 600; color: var(--text-primary); }
 .cruise-hint { font-size: 13px; color: var(--text-secondary); text-align: center; padding: 16px 0; }
 
-/* ── 传感器列表 ── */
-.sensor-list { font-size: 13px; }
-.sensor-row {
-  display: flex; justify-content: space-between; align-items: center;
-  padding: 6px 0; border-bottom: 1px solid var(--border-color, #ebeef5);
+.sensor-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
 }
-.sensor-row:last-child { border-bottom: none; }
-.sensor-label { color: var(--text-secondary); }
-.sensor-value { font-weight: 600; color: var(--text-primary); }
-.sensor-value small { font-size: 11px; font-weight: 400; opacity: 0.6; margin-left: 2px; }
-.sensor-warn { color: #f56c6c !important; }
-.sensor-coord { font-size: 12px; }
+.sensor-card {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 12px; border-radius: 10px;
+  background: var(--bg-primary, #f4f6f8);
+  border: 1px solid transparent;
+  transition: all 0.2s ease;
+}
+.sensor-card:hover { border-color: var(--border-color, #e2e8f0); }
+.sensor-card-warn {
+  background: #fef0f0 !important;
+  border-color: #fbc4c4 !important;
+}
+.sensor-card-danger {
+  background: #fef0f0 !important;
+  border-color: #fbc4c4 !important;
+}
+.sensor-card-ok {
+  background: #f0f9eb !important;
+  border-color: #c2e7b0 !important;
+}
+.sensor-card-wide {
+  grid-column: span 3;
+}
+.sensor-card-icon {
+  width: 36px; height: 36px; border-radius: 8px;
+  display: flex; align-items: center; justify-content: center;
+  flex-shrink: 0;
+}
+.sensor-card-body {
+  display: flex; flex-direction: column; min-width: 0;
+}
+.sensor-card-label {
+  font-size: 11px; color: var(--text-secondary); line-height: 1.2;
+}
+.sensor-card-value {
+  font-size: 14px; font-weight: 700; color: var(--text-primary); line-height: 1.4;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.sensor-card-value small {
+  font-size: 10px; font-weight: 400; opacity: 0.6; margin-left: 2px;
+}
+.sensor-coord { font-size: 12px; font-family: monospace; }
 
-/* ── 地图 ── */
 .map-header { display: flex; justify-content: space-between; align-items: center; width: 100%; }
 .map-header-actions { display: flex; align-items: center; gap: 8px; }
 .map-container-large {
-  width: 100%; height: 420px;
+  width: 100%; height: 480px;
   border: 1px solid var(--border-color, #ebeef5);
   border-radius: 6px; background: var(--bg-primary, #f5f7fa);
 }
@@ -581,13 +754,48 @@ onUnmounted(() => { stopPolling() })
   margin-top: 8px; display: flex; justify-content: space-between;
   align-items: center; font-size: 13px; color: var(--text-secondary);
 }
-.position-info { }
 .trajectory-stats { font-size: 12px; }
 
-/* ── 导航事件 ── */
 .nav-timeline { max-height: 260px; overflow-y: auto; padding-right: 8px; }
 .nav-event-item { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .evt-detail { font-size: 14px; color: var(--text-primary); }
 .evt-coords { font-size: 12px; color: var(--text-secondary); }
 .evt-wp { font-size: 12px; color: #409eff; font-weight: 500; }
+
+.config-header { display: flex; justify-content: space-between; align-items: center; width: 100%; }
+.config-collapse {
+  border: none !important;
+}
+.config-collapse :deep(.el-collapse-item__header) {
+  font-weight: 600; font-size: 13px; color: var(--text-secondary);
+  background: transparent; border-bottom: 1px dashed var(--border-color-light, #f1f5f9);
+  height: 36px; line-height: 36px;
+}
+.config-collapse :deep(.el-collapse-item__wrap) {
+  background: transparent; border: none;
+}
+.config-collapse :deep(.el-collapse-item__content) {
+  padding-bottom: 4px;
+}
+.config-row {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 6px 0; gap: 8px;
+}
+.config-label {
+  flex-shrink: 0; color: var(--text-secondary); min-width: 90px; font-size: 13px;
+}
+.config-slider-wrap {
+  flex: 1; display: flex; align-items: center; gap: 8px;
+}
+.config-slider-wrap .el-slider { flex: 1; }
+.config-val {
+  flex-shrink: 0; min-width: 52px; text-align: right;
+  font-weight: 600; color: var(--text-primary); font-family: monospace; font-size: 12px;
+}
+
+@media (max-width: 768px) {
+  .sensor-grid { grid-template-columns: repeat(2, 1fr); }
+  .sensor-card-wide { grid-column: span 2; }
+  .map-container-large { height: 320px; }
+}
 </style>
