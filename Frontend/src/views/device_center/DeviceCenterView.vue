@@ -175,12 +175,18 @@
           <el-descriptions-item label="湿度(%)">{{ deviceDetail.latest_telemetry.humidity ?? '-' }}</el-descriptions-item>
           <el-descriptions-item label="超声波(cm)">{{ deviceDetail.latest_telemetry.ultrasonic_cm ?? '-' }}</el-descriptions-item>
           <el-descriptions-item label="速度PWM">{{ deviceDetail.latest_telemetry.speed_pwm ?? '-' }}</el-descriptions-item>
+          <el-descriptions-item label="红外左">{{ deviceDetail.latest_telemetry.ir_l ? '障碍' : '安全' }}</el-descriptions-item>
+          <el-descriptions-item label="红外右">{{ deviceDetail.latest_telemetry.ir_r ? '障碍' : '安全' }}</el-descriptions-item>
+          <el-descriptions-item label="航向角(°)">{{ deviceDetail.latest_telemetry.imu_heading ?? '-' }}</el-descriptions-item>
+          <el-descriptions-item label="角速度Z(°/s)">{{ deviceDetail.latest_telemetry.imu_gz ?? '-' }}</el-descriptions-item>
+          <el-descriptions-item label="加速度X(g)">{{ deviceDetail.latest_telemetry.imu_ax ?? '-' }}</el-descriptions-item>
+          <el-descriptions-item label="加速度Y(g)">{{ deviceDetail.latest_telemetry.imu_ay ?? '-' }}</el-descriptions-item>
           <el-descriptions-item label="记录时间" :span="2">{{ formatTime(deviceDetail.latest_telemetry.recorded_at) }}</el-descriptions-item>
         </el-descriptions>
         <el-empty v-else description="暂无遥测数据" />
 
         <el-divider content-position="left">遥测历史趋势</el-divider>
-        <div ref="telemetryChartRef" style="width: 100%; height: 280px;"></div>
+        <div ref="telemetryChartRef" style="width: 100%; height: 400px;"></div>
       </div>
     </el-drawer>
   </div>
@@ -284,8 +290,8 @@ async function viewDetail(row) {
       safe_distance_cm: res.safe_distance_cm,
     })
 
-    // 获取历史遥测用于图表
-    const historyRes = await telemetryAPI.history(row.device_id, 50)
+    // 获取历史遥测用于图表 (取最近20条, 避免折线太密集)
+    const historyRes = await telemetryAPI.history(row.device_id, 20)
     pendingHistoryRecords = historyRes.records || []
     if (pendingHistoryRecords.length > 0) {
       await nextTick()
@@ -317,7 +323,7 @@ function renderTelemetryChart(records) {
   if (!telemetryChart) telemetryChart = echarts.init(telemetryChartRef.value)
 
   const times = records.slice().reverse().map(r =>
-    new Date(r.recorded_at).toLocaleTimeString('zh-CN', { hour12: false })
+    new Date(r.recorded_at).toLocaleTimeString('zh-CN', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' })
   )
   const temps = records.slice().reverse().map(r => r.temperature)
   const humids = records.slice().reverse().map(r => r.humidity)
@@ -326,13 +332,20 @@ function renderTelemetryChart(records) {
   telemetryChart.setOption({
     tooltip: { trigger: 'axis' },
     legend: { bottom: 0, data: ['温度(°C)', '湿度(%)', '超声波(cm)'] },
-    grid: { top: 20, right: 20, bottom: 40, left: 50 },
-    xAxis: { type: 'category', data: times, axisLabel: { rotate: 30, fontSize: 10 } },
-    yAxis: { type: 'value' },
+    grid: { top: 30, right: 60, bottom: 40, left: 50 },
+    xAxis: {
+      type: 'category',
+      data: times,
+      axisLabel: { rotate: 30, fontSize: 10, interval: 0 },
+    },
+    yAxis: [
+      { type: 'value', name: '温度/湿度', position: 'left' },
+      { type: 'value', name: '距离(cm)', position: 'right' },
+    ],
     series: [
-      { name: '温度(°C)', type: 'line', data: temps, smooth: true, lineStyle: { color: '#f56c6c' }, itemStyle: { color: '#f56c6c' } },
-      { name: '湿度(%)', type: 'line', data: humids, smooth: true, lineStyle: { color: '#409eff' }, itemStyle: { color: '#409eff' } },
-      { name: '超声波(cm)', type: 'line', data: ultras, smooth: true, lineStyle: { color: '#67c23a' }, itemStyle: { color: '#67c23a' } },
+      { name: '温度(°C)', type: 'line', data: temps, smooth: true, symbol: 'circle', symbolSize: 6, lineStyle: { width: 2, color: '#f56c6c' }, itemStyle: { color: '#f56c6c' }, yAxisIndex: 0 },
+      { name: '湿度(%)', type: 'line', data: humids, smooth: true, symbol: 'circle', symbolSize: 6, lineStyle: { width: 2, color: '#409eff' }, itemStyle: { color: '#409eff' }, yAxisIndex: 0 },
+      { name: '超声波(cm)', type: 'line', data: ultras, smooth: true, symbol: 'diamond', symbolSize: 6, lineStyle: { width: 2, color: '#67c23a' }, itemStyle: { color: '#67c23a' }, yAxisIndex: 1 },
     ],
   })
 }

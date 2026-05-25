@@ -117,8 +117,12 @@
               <span class="sensor-value" :class="{ 'sensor-warn': positionData?.ultrasonic_cm < 50 }">{{ positionData?.ultrasonic_cm ?? '--' }}<small>cm</small></span>
             </div>
             <div class="sensor-row">
-              <span class="sensor-label">红外</span>
-              <span class="sensor-value" :style="{ color: positionData?.ir_obstacle ? '#f56c6c' : '#67c23a' }">{{ positionData?.ir_obstacle ? '障碍' : '安全' }}</span>
+              <span class="sensor-label">红外左</span>
+              <span class="sensor-value" :style="{ color: positionData?.ir_l ? '#f56c6c' : '#67c23a' }">{{ positionData?.ir_l ? '障碍' : '安全' }}</span>
+            </div>
+            <div class="sensor-row">
+              <span class="sensor-label">红外右</span>
+              <span class="sensor-value" :style="{ color: positionData?.ir_r ? '#f56c6c' : '#67c23a' }">{{ positionData?.ir_r ? '障碍' : '安全' }}</span>
             </div>
             <div class="sensor-row">
               <span class="sensor-label">航向角</span>
@@ -232,13 +236,12 @@ const deviceList = ref([])
 const selectedDeviceId = ref('')
 const controlMode = ref('manual')
 const speedGear = ref('mid')
-const SPEED_MAP = { low: 150, mid: 200, high: 255 }
+const SPEED_MAP = { low: 180, mid: 200, high: 255 }
 const gearOptions = [
-  { value: 'low', label: '低速', icon: '🐢', pwm: 100 },
-  { value: 'mid', label: '中速', icon: '🚗', pwm: 150 },
-  { value: 'high', label: '高速', icon: '🏎', pwm: 200 },
+  { value: 'low', label: '低速', icon: '🐢', pwm: 180 },
+  { value: 'mid', label: '中速', icon: '🚗', pwm: 200 },
+  { value: 'high', label: '高速', icon: '🏎', pwm: 255 },
 ]
-const commandLoading = ref(false)
 const routeLoading = ref(false)
 const mapLoading = ref(false)
 
@@ -333,14 +336,10 @@ async function startCruise() {
 }
 
 async function sendCmd(cmd) {
-  commandLoading.value = true
   try {
     await vehicleAPI.sendCommand(selectedDeviceId.value, cmd, SPEED_MAP[speedGear.value])
-    ElMessage.success(`指令 "${cmd}" 已发送 (PWM ${SPEED_MAP[speedGear.value]})`)
   } catch (err) {
     ElMessage.error(err.response?.data?.error || '指令发送失败')
-  } finally {
-    commandLoading.value = false
   }
 }
 

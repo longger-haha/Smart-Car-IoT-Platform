@@ -470,11 +470,9 @@ def publish_command(device_id: str, payload: dict) -> bool:
 
     topic   = f'cmd/{device_id}'
     message = json.dumps(payload, ensure_ascii=False)
-    logger.info(f'[MQTT] Publishing to {topic}: {message}')
-    result  = _client.publish(topic, message, qos=1)
+    result  = _client.publish(topic, message, qos=0)
 
     if result.rc == mqtt.MQTT_ERR_SUCCESS:
-        logger.info(f'[MQTT] Published OK to {topic}: {message}')
         return True
     else:
         logger.error(f'[MQTT] Publish to {topic} failed, rc={result.rc}')

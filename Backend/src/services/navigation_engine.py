@@ -29,10 +29,10 @@ logger = logging.getLogger(__name__)
 
 EARTH_RADIUS_M = 6371000.0
 ARRIVAL_RADIUS_M = 3.0
-BASE_CRUISE_SPEED = 160
+BASE_CRUISE_SPEED = 200
 LOW_BATTERY_MV = 10500
 CRITICAL_BATTERY_MV = 10000
-COMMAND_INTERVAL_S = 1.0
+COMMAND_INTERVAL_S = 0.3
 
 
 # ── 数据类 ────────────────────────────────────────────────────
@@ -130,8 +130,13 @@ class NavigationEngine:
     def stop_cruise(self, device_id: str) -> dict:
         """中止巡航"""
         ctx = self._get_context(device_id)
-        ctx.state = NavState.ABORTED
+        ctx.state = NavState.IDLE
         ctx.pid.reset()
+        ctx.waypoints = []
+        ctx.current_wp_index = 0
+
+        # 立即下发停止指令
+        self._publish(device_id, {"cmd": "stop"})
 
         logger.info(f'[NAV] 巡航中止: device={device_id}')
         return {"success": True, "message": "巡航已中止"}
@@ -161,16 +166,30 @@ class NavigationEngine:
         # 2. 电池检查
         bat_mv = data.get('bat_mv')
         if bat_mv is not None and bat_mv < CRITICAL_BATTERY_MV:
-            if ctx.state == NavState.CRUISING:
-                ctx.state = NavState.ABORTED
+            if ctx.state in (NavState.CRUISING, NavState.OBSTACLE_AVOID):
+                ctx.state = NavState.IDLE
                 self._publish(device_id, {"cmd": "stop"})
                 logger.warning(
                     f'[NAV] 电池严重不足 {bat_mv}mV, 巡航中止: '
                     f'device={device_id}')
             return
 
-        # 3. 避障检查 (仅在巡航状态下生效, IDLE 时不干预手动控制)
-        if ctx.state != NavState.IDLE:
+        # 3. 安全停车检查 (所有模式下生效, 包括手动控制)
+        us_cm = data.get('ultrasonic_cm')
+        ir_l = data.get('ir_l', 0)
+        ir_r = data.get('ir_r', 0)
+        if us_cm is not None and 0 < us_cm < SAFE_DISTANCE_CM:
+            # 紧急停车: 超声波 < 50cm 无论什么模式都必须停
+            self._publish(device_id, {"cmd": "stop"})
+            if ctx.state in (NavState.CRUISING, NavState.OBSTACLE_AVOID):
+                ctx.state = NavState.IDLE
+            logger.warning(
+                f'[SAFETY] 紧急停车! us={us_cm}cm, '
+                f'mode={ctx.state}: device={device_id}')
+            return
+
+        # 4. 避障检查 (仅在巡航/避障状态下生效, IDLE/ARRIVED 时不干预)
+        if ctx.state in (NavState.CRUISING, NavState.OBSTACLE_AVOID):
             avoid_cmd = self._check_obstacle(ctx, data)
             if avoid_cmd:
                 if ctx.state == NavState.CRUISING:

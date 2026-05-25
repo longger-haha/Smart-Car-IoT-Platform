@@ -43,7 +43,6 @@ def send_command():
     command   = data.get('command',   '').strip().lower()
 
     log = logging.getLogger(__name__)
-    log.info(f'[CMD] Received command request: device_id={device_id!r} command={command!r}')
 
     if not device_id:
         return jsonify({'error': 'device_id 不能为空'}), 400
@@ -65,9 +64,7 @@ def send_command():
             'speed_pwm': data.get('speed_pwm', 150),
         }
 
-    log.info(f'[CMD] Calling publish_command: device_id={device_id!r} payload={payload}')
     success = publish_command(device_id, payload)
-    log.info(f'[CMD] publish_command result: {success}')
 
     if not success:
         return jsonify({'error': 'MQTT 发布失败'}), 503
