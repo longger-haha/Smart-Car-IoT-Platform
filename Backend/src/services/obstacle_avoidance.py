@@ -16,8 +16,8 @@ class ObstacleAvoidance:
     """避障决策引擎"""
 
     SAFE_DISTANCE_CM = 50.0
-    CRITICAL_DISTANCE_CM = 20.0
-    AVOID_COOLDOWN_S = 3.0
+    CRITICAL_DISTANCE_CM = 15.0
+    AVOID_COOLDOWN_S = 1.0
 
     def __init__(self):
         self._last_avoid_time = 0.0
