@@ -112,6 +112,13 @@ class NavigationEngine:
             ctx.waypoints = [Waypoint(w['lat'], w['lng']) for w in waypoints]
             ctx.current_wp_index = 0
             ctx.state = NavState.CRUISING
+            # 立即下发第一个前进指令, ESP32本地避障会判断是否安全
+            self._publish(device_id, {
+                "cmd": "diff",
+                "pwm_l": ctx.cruise_speed,
+                "pwm_r": ctx.cruise_speed,
+            })
+            ctx.last_command_time = time.time()
             logger.info(
                 f'[NAV] 航点巡航启动: device={device_id} '
                 f'waypoints={len(ctx.waypoints)}')
@@ -122,6 +129,13 @@ class NavigationEngine:
             ctx.waypoints = []
             ctx.current_wp_index = 0
             ctx.state = NavState.CRUISING
+            # 立即下发第一个前进指令
+            self._publish(device_id, {
+                "cmd": "diff",
+                "pwm_l": ctx.cruise_speed,
+                "pwm_r": ctx.cruise_speed,
+            })
+            ctx.last_command_time = time.time()
             logger.info(
                 f'[NAV] 自由巡航启动: device={device_id} (无航点，仅避障)')
             return {"success": True,
@@ -178,8 +192,8 @@ class NavigationEngine:
         us_cm = data.get('ultrasonic_cm')
         ir_l = data.get('ir_l', 0)
         ir_r = data.get('ir_r', 0)
-        if us_cm is not None and 0 < us_cm < SAFE_DISTANCE_CM:
-            # 紧急停车: 超声波 < 50cm 无论什么模式都必须停
+        if us_cm is not None and 0 < us_cm < CRITICAL_DISTANCE_CM:
+            # 紧急停车: 超声波 < 15cm 无论什么模式都必须停 (ESP32本地已100ms响应, 此为兜底)
             self._publish(device_id, {"cmd": "stop"})
             if ctx.state in (NavState.CRUISING, NavState.OBSTACLE_AVOID):
                 ctx.state = NavState.IDLE

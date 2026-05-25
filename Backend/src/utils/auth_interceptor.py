@@ -200,9 +200,12 @@ def require_device_ownership(fn):
     对于 Admin 用户，放行所有设备。
     对于 User 租户，若设备非己有，则记录跨租户越权攻击日志并阻断。
 
-    要求：被装饰的路由函数参数列表中有 `device_id`，
-    或者请求体 JSON 中包含 `device_id`。
+    使用内存缓存减少数据库查询, 提升高频指令响应速度。
     """
+    # 内存缓存: (username, device_id) -> True/False, 60秒过期
+    _ownership_cache = {}
+    _cache_ttl = 60.0
+
     @wraps(fn)
     def wrapper(*args, **kwargs):
         # 获取身份信息
@@ -215,6 +218,10 @@ def require_device_ownership(fn):
         user_role = claims.get('role', 'user')
         username  = claims.get('sub', 'unknown')
 
+        # Admin 用户放行
+        if user_role == 'admin':
+            return fn(*args, **kwargs)
+
         # 尝试从 kwargs (URL path) 获取，若没有则从 json 获取
         device_id = kwargs.get('device_id')
         if not device_id:
@@ -224,9 +231,18 @@ def require_device_ownership(fn):
         if not device_id:
             return jsonify({'error': '未提供设备ID'}), 400
 
-        # Admin 用户放行
-        if user_role == 'admin':
-            return fn(*args, **kwargs)
+        # 检查缓存
+        cache_key = (username, device_id)
+        now = time.time()
+        if cache_key in _ownership_cache:
+            cached_result, cached_time = _ownership_cache[cache_key]
+            if now - cached_time < _cache_ttl:
+                if not cached_result:
+                    return jsonify({
+                        'error': '无权限：该设备不属于您',
+                        'detail': '越权拦截，已记录审计日志'
+                    }), 403
+                return fn(*args, **kwargs)
 
         # 校验设备归属
         from src.models.device import Device
@@ -234,11 +250,13 @@ def require_device_ownership(fn):
 
         target_device = Device.query.filter_by(device_id=device_id).first()
         if not target_device:
+            _ownership_cache[cache_key] = (False, now)
             return jsonify({'error': '设备不存在'}), 404
 
         current_user = User.query.filter_by(username=username).first()
         
         if not current_user or target_device.user_id != current_user.id:
+            _ownership_cache[cache_key] = (False, now)
             _write_audit(
                 event_type='rbac_deny',
                 detail=f'Cross-tenant horizontal privilege escalation attempt! User {username!r} tried to access device {device_id!r} owned by user_id {target_device.user_id}.',
@@ -250,5 +268,6 @@ def require_device_ownership(fn):
                 'detail': '越权拦截，已记录审计日志'
             }), 403
 
+        _ownership_cache[cache_key] = (True, now)
         return fn(*args, **kwargs)
     return wrapper
