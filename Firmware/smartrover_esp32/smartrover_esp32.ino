@@ -120,32 +120,43 @@ unsigned long tHeartbeat = 0;
 
 // 本地实时避障 — 状态机
 enum LocalAvoidState {
-  AVOID_NONE = 0,       // 无避障, 正常控制
-  AVOID_EMERGENCY,      // 紧急停车 (< 15cm)
-  AVOID_BACKWARD,       // 后退 (15~30cm, 限时1秒)
-  AVOID_TURN,           // 原地转向 (限时0.8秒)
-  AVOID_PROBE           // 探路: 转向后检查前方, 不通则继续转
+  AVOID_NONE = 0,
+  AVOID_EMERGENCY,
+  AVOID_BACKWARD,
+  AVOID_TURN,
+  AVOID_PROBE
 };
 
 bool motorRunning = false;
 LocalAvoidState avoidState = AVOID_NONE;
-unsigned long avoidStateStart = 0;      // 当前避障状态开始时间
+unsigned long avoidStateStart = 0;
 unsigned long tLocalAvoid = 0;
-int avoidTurnDir = -1;                  // 当前转向方向: 1=右转, -1=左转
-int avoidTurnRetries = 0;               // 探路重试次数
-unsigned long LOCAL_AVOID_MS = 100;     // 检查间隔
-float LOCAL_CRITICAL_CM = 10.0;         // 紧急停车距离
-float LOCAL_WARN_CM = 15.0;             // 后退距离
-float LOCAL_SAFE_CM = 30.0;             // 安全距离 (可以前进)
-unsigned long BACKWARD_TIMEOUT_MS = 1000;  // 后退最长1秒
-unsigned long TURN_TIMEOUT_MS = 800;       // 转向最长0.8秒
-int MAX_PROBE_RETRIES = 6;                 // 探路最多6次 (约360度)
-bool avoidEnabled = true;               // 避障开关 (前端可远程控制)
+int avoidTurnDir = -1;
+int avoidTurnRetries = 0;
+unsigned long LOCAL_AVOID_MS = 100;
+float LOCAL_CRITICAL_CM = 5.0;
+float LOCAL_WARN_CM = 10.0;
+float LOCAL_SAFE_CM = 20.0;
+unsigned long BACKWARD_TIMEOUT_MS = 300;
+unsigned long TURN_TIMEOUT_MS = 500;
+int MAX_PROBE_RETRIES = 6;
+bool avoidEnabled = true;
 
-// 巡航恢复: 记录最后的diff指令, 避障结束后自动恢复
-bool inCruiseMode = false;            // 是否处于巡航模式 (收到diff指令时置true, stop时置false)
-int lastCruisePwmL = 200;             // 最后的巡航左轮PWM
-int lastCruisePwmR = 200;             // 最后的巡航右轮PWM
+bool inCruiseMode = false;
+int cruiseSpeed = 200;
+float turnTargetHeading = 0;
+float TURN_ANGLE = 45.0;
+const float TURN_TOLERANCE = 5.0;
+
+int irLCount = 0;
+int irRCount = 0;
+const int IR_DEBOUNCE_COUNT = 3;
+
+unsigned long stuckStart = 0;
+const unsigned long STUCK_TIMEOUT_MS = 3000;
+const float STUCK_ACC_THRESHOLD = 0.08;
+
+String cruiseStateStr = "idle";
 
 // MPU6050 原始数据
 float imuAx = 0, imuAy = 0, imuAz = 0;
@@ -315,6 +326,8 @@ void stopMotors() {
   avoidState = AVOID_NONE;
   avoidTurnRetries = 0;
   inCruiseMode = false;
+  cruiseStateStr = "idle";
+  stuckStart = 0;
   motorShiftReg = 0;
   motorShiftOut(0);
   ledcWrite(PWM_M1_PIN, 0);
@@ -404,6 +417,30 @@ void readMPU6050() {
     if (imuHeading < -180) imuHeading += 360;
   }
   lastT = now;
+}
+
+float normalizeAngle(float angle) {
+  while (angle > 180) angle -= 360;
+  while (angle < -180) angle += 360;
+  return angle;
+}
+
+void readIRDebounced(int &irL, int &irR) {
+  int irLRaw = !digitalRead(IR_L_PIN);
+  int irRRaw = !digitalRead(IR_R_PIN);
+  if (irLRaw) irLCount++; else irLCount = 0;
+  if (irRRaw) irRCount++; else irRCount = 0;
+  irL = (irLCount >= IR_DEBOUNCE_COUNT) ? 1 : 0;
+  irR = (irRCount >= IR_DEBOUNCE_COUNT) ? 1 : 0;
+}
+
+void stopMotorsSoft() {
+  motorShiftReg = 0;
+  motorShiftOut(0);
+  ledcWrite(PWM_M1_PIN, 0);
+  ledcWrite(PWM_M2_PIN, 0);
+  ledcWrite(PWM_M3_PIN, 0);
+  ledcWrite(PWM_M4_PIN, 0);
 }
 
 // ═══ WiFi 扫描定位 ═══
@@ -512,17 +549,27 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
     return;
   }
 
-  if (strcmp(cmd, "forward") == 0)       { speedPwm = spd; inCruiseMode = false; fwd(spd); }
-  else if (strcmp(cmd, "backward") == 0)  { speedPwm = spd; inCruiseMode = false; bwd(spd); }
-  else if (strcmp(cmd, "left") == 0)      { speedPwm = spd; inCruiseMode = false; rotL(spd); }
-  else if (strcmp(cmd, "right") == 0)     { speedPwm = spd; inCruiseMode = false; rotR(spd); }
+  if (strcmp(cmd, "forward") == 0)       { speedPwm = spd; inCruiseMode = false; cruiseStateStr = "idle"; fwd(spd); }
+  else if (strcmp(cmd, "backward") == 0)  { speedPwm = spd; inCruiseMode = false; cruiseStateStr = "idle"; bwd(spd); }
+  else if (strcmp(cmd, "left") == 0)      { speedPwm = spd; inCruiseMode = false; cruiseStateStr = "idle"; rotL(spd); }
+  else if (strcmp(cmd, "right") == 0)     { speedPwm = spd; inCruiseMode = false; cruiseStateStr = "idle"; rotR(spd); }
   else if (strcmp(cmd, "stop") == 0)      { stopMotors(); }
+  else if (strcmp(cmd, "cruise") == 0) {
+    inCruiseMode = true;
+    cruiseSpeed = constrain(spd, 150, 255);
+    speedPwm = cruiseSpeed;
+    avoidState = AVOID_NONE;
+    avoidTurnRetries = 0;
+    cruiseStateStr = "idle";
+    stuckStart = 0;
+    fwd(cruiseSpeed);
+    Serial.printf("[CRUISE] START speed=%d\n", cruiseSpeed);
+  }
   else if (strcmp(cmd, "diff") == 0) {
     int pwmL = doc["pwm_l"] | spd;
     int pwmR = doc["pwm_r"] | spd;
-    inCruiseMode = true;
-    lastCruisePwmL = pwmL;
-    lastCruisePwmR = pwmR;
+    inCruiseMode = false;
+    cruiseStateStr = "idle";
     diffDrive(pwmL, pwmR);
   }
   else if (strcmp(cmd, "config") == 0) {
@@ -536,7 +583,8 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
       if (params.containsKey("warn_cm"))            LOCAL_WARN_CM = constrain(params["warn_cm"].as<float>(), 10.0f, 40.0f);
       if (params.containsKey("safe_cm"))            LOCAL_SAFE_CM = constrain(params["safe_cm"].as<float>(), 20.0f, 80.0f);
       if (params.containsKey("backward_timeout_ms"))BACKWARD_TIMEOUT_MS = constrain(params["backward_timeout_ms"].as<unsigned long>(), 300UL, 3000UL);
-      if (params.containsKey("turn_timeout_ms"))    TURN_TIMEOUT_MS = constrain(params["turn_timeout_ms"].as<unsigned long>(), 200UL, 2000UL);
+      if (params.containsKey("turn_angle"))         TURN_ANGLE = constrain(params["turn_angle"].as<float>(), 30.0f, 180.0f);
+      if (params.containsKey("turn_timeout_ms"))    TURN_TIMEOUT_MS = constrain(params["turn_timeout_ms"].as<unsigned long>(), 500UL, 5000UL);
       if (params.containsKey("max_probe_retries"))  MAX_PROBE_RETRIES = constrain(params["max_probe_retries"].as<int>(), 1, 12);
       if (params.containsKey("avoid_enabled")) {
         bool newAvoid = params["avoid_enabled"].as<bool>();
@@ -549,9 +597,9 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
       if (params.containsKey("wifi_scan_max_aps"))  WIFI_SCAN_MAX_APS = constrain(params["wifi_scan_max_aps"].as<int>(), 2, 10);
       if (LOCAL_WARN_CM <= LOCAL_CRITICAL_CM) LOCAL_WARN_CM = LOCAL_CRITICAL_CM + 5.0f;
       if (LOCAL_SAFE_CM <= LOCAL_WARN_CM)     LOCAL_SAFE_CM = LOCAL_WARN_CM + 10.0f;
-      Serial.printf("[CONFIG] Updated: spd=%d tel=%lu crit=%.1f warn=%.1f safe=%.1f bwd=%lu turn=%lu probe=%d avoid=%d\n",
+      Serial.printf("[CONFIG] Updated: spd=%d tel=%lu crit=%.1f warn=%.1f safe=%.1f bwd=%lu turn_angle=%.1f turn_to=%lu probe=%d avoid=%d\n",
                     speedPwm, TELEMETRY_MS, LOCAL_CRITICAL_CM, LOCAL_WARN_CM, LOCAL_SAFE_CM,
-                    BACKWARD_TIMEOUT_MS, TURN_TIMEOUT_MS, MAX_PROBE_RETRIES, avoidEnabled);
+                    BACKWARD_TIMEOUT_MS, TURN_ANGLE, TURN_TIMEOUT_MS, MAX_PROBE_RETRIES, avoidEnabled);
       String ackTopic = "config_ack/" + String(DEVICE_ID);
       JsonDocument ackDoc;
       ackDoc["type"] = "config_ack";
@@ -561,6 +609,7 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
       ackDoc["warn_cm"] = serialized(String(LOCAL_WARN_CM, 1));
       ackDoc["safe_cm"] = serialized(String(LOCAL_SAFE_CM, 1));
       ackDoc["backward_timeout_ms"] = (int)BACKWARD_TIMEOUT_MS;
+      ackDoc["turn_angle"] = serialized(String(TURN_ANGLE, 1));
       ackDoc["turn_timeout_ms"] = (int)TURN_TIMEOUT_MS;
       ackDoc["max_probe_retries"] = MAX_PROBE_RETRIES;
       ackDoc["avoid_enabled"] = avoidEnabled;
@@ -658,6 +707,10 @@ void sendTelemetry() {
   doc["imu_gy"] = serialized(String(imuGy, 2));
   doc["imu_gz"] = serialized(String(imuGz, 2));
   doc["imu_heading"] = serialized(String(imuHeading, 1));
+
+  doc["cruise_active"] = inCruiseMode;
+  doc["cruise_state"] = cruiseStateStr;
+  doc["avoid_state"] = (int)avoidState;
 
   // WiFi AP 扫描结果 (供后端定位)
   JsonArray aps = doc.createNestedArray("wifi_aps");
@@ -812,52 +865,52 @@ void loop() {
   if (now - tLocalAvoid >= LOCAL_AVOID_MS) {
     tLocalAvoid = now;
 
-    // 仅在电机运行且避障开启时才做避障 (静止时不主动启动电机)
     if (avoidEnabled && (motorRunning || avoidState != AVOID_NONE)) {
       float usCm = readUltrasonic();
-      int irL = !digitalRead(IR_L_PIN);
-      int irR = !digitalRead(IR_R_PIN);
+      int irL, irR;
+      readIRDebounced(irL, irR);
+      readMPU6050();
 
       switch (avoidState) {
-        case AVOID_NONE:
-          // ── 紧急停车: 所有模式通用, < 15cm 必须停 ──
+        case AVOID_NONE: {
           if (usCm > 0 && usCm < LOCAL_CRITICAL_CM) {
-            stopMotors();
+            stopMotorsSoft();
             avoidState = AVOID_EMERGENCY;
             avoidStateStart = now;
             avoidTurnRetries = 0;
+            if (inCruiseMode) cruiseStateStr = "avoiding";
             Serial.printf("[AVOID] EMERGENCY us=%.1fcm\n", usCm);
           }
-          // ── 巡航避障: 仅巡航模式, 15~50cm 触发自动避让 ──
           else if (inCruiseMode && usCm > 0 && usCm < LOCAL_WARN_CM) {
             avoidState = AVOID_BACKWARD;
             avoidStateStart = now;
             avoidTurnRetries = 0;
+            cruiseStateStr = "avoiding";
             diffDrive(-200, -200);
             Serial.printf("[AVOID] CRUISE-BACK us=%.1fcm\n", usCm);
           } else if (inCruiseMode && usCm > 0 && usCm < LOCAL_SAFE_CM) {
             avoidTurnRetries = 0;
+            cruiseStateStr = "avoiding";
             if (irL && !irR) {
               avoidTurnDir = 1;
-              avoidState = AVOID_TURN;
-              avoidStateStart = now;
-              diffDrive(200, -200);
-              Serial.printf("[AVOID] CRUISE-TURN-R us=%.1f irL=%d\n", usCm, irL);
             } else if (irR && !irL) {
               avoidTurnDir = -1;
-              avoidState = AVOID_TURN;
-              avoidStateStart = now;
-              diffDrive(-200, 200);
-              Serial.printf("[AVOID] CRUISE-TURN-L us=%.1f irR=%d\n", usCm, irR);
             } else {
               avoidState = AVOID_BACKWARD;
               avoidStateStart = now;
               diffDrive(-200, -200);
               Serial.printf("[AVOID] CRUISE-BACK us=%.1fcm\n", usCm);
+              break;
             }
+            turnTargetHeading = normalizeAngle(imuHeading + avoidTurnDir * TURN_ANGLE);
+            avoidState = AVOID_TURN;
+            avoidStateStart = now;
+            if (avoidTurnDir == 1) diffDrive(200, -200);
+            else diffDrive(-200, 200);
+            Serial.printf("[AVOID] CRUISE-TURN dir=%d target=%.1f\n", avoidTurnDir, turnTargetHeading);
           }
-          // ── 手动模式: 15~50cm 不干预, 由用户自行判断 ──
           break;
+        }
 
         case AVOID_EMERGENCY:
           if (usCm > LOCAL_WARN_CM) {
@@ -865,15 +918,28 @@ void loop() {
               if (irL && !irR) avoidTurnDir = 1;
               else if (irR && !irL) avoidTurnDir = -1;
               else avoidTurnDir = 1;
+              turnTargetHeading = normalizeAngle(imuHeading + avoidTurnDir * TURN_ANGLE);
               avoidState = AVOID_TURN;
               avoidStateStart = now;
               if (avoidTurnDir == 1) diffDrive(200, -200);
               else diffDrive(-200, 200);
-              Serial.printf("[AVOID] EMER→TURN dir=%d\n", avoidTurnDir);
+              Serial.printf("[AVOID] EMER→TURN dir=%d target=%.1f\n", avoidTurnDir, turnTargetHeading);
             } else {
               avoidState = AVOID_NONE;
-              Serial.println("[AVOID] EMER→CLEAR, waiting for command");
+              Serial.println("[AVOID] EMER→CLEAR");
             }
+          } else if (inCruiseMode && now - avoidStateStart >= 300) {
+            diffDrive(-200, -200);
+            avoidState = AVOID_BACKWARD;
+            avoidStateStart = now;
+            avoidTurnRetries = 0;
+            Serial.printf("[AVOID] EMER→BACK us=%.1fcm\n", usCm);
+          } else if (!inCruiseMode && now - avoidStateStart >= 2000) {
+            diffDrive(-200, -200);
+            avoidState = AVOID_BACKWARD;
+            avoidStateStart = now;
+            avoidTurnRetries = 0;
+            Serial.printf("[AVOID] EMER→BACK (safety) us=%.1fcm\n", usCm);
           }
           break;
 
@@ -882,77 +948,96 @@ void loop() {
             if (irL && !irR) avoidTurnDir = 1;
             else if (irR && !irL) avoidTurnDir = -1;
             else avoidTurnDir = 1;
+            turnTargetHeading = normalizeAngle(imuHeading + avoidTurnDir * TURN_ANGLE);
             avoidState = AVOID_TURN;
             avoidStateStart = now;
             if (avoidTurnDir == 1) diffDrive(200, -200);
             else diffDrive(-200, 200);
-            Serial.printf("[AVOID] BACK→TURN dir=%d\n", avoidTurnDir);
-          } else if (usCm > LOCAL_SAFE_CM) {
-            if (irL && !irR) avoidTurnDir = 1;
-            else if (irR && !irL) avoidTurnDir = -1;
-            else avoidTurnDir = 1;
-            avoidState = AVOID_TURN;
-            avoidStateStart = now;
-            if (avoidTurnDir == 1) diffDrive(200, -200);
-            else diffDrive(-200, 200);
-            Serial.printf("[AVOID] BACK→TURN (clear) dir=%d\n", avoidTurnDir);
+            Serial.printf("[AVOID] BACK→TURN dir=%d target=%.1f us=%.1fcm\n", avoidTurnDir, turnTargetHeading, usCm);
           }
           break;
 
-        case AVOID_TURN:
-          // 转向中, 检查超时
-          if (now - avoidStateStart >= TURN_TIMEOUT_MS) {
-            // 只停电机, 不重置避障状态和巡航标志
-            motorRunning = false;
-            motorShiftReg = 0;
-            motorShiftOut(0);
-            ledcWrite(PWM_M1_PIN, 0);
-            ledcWrite(PWM_M2_PIN, 0);
-            ledcWrite(PWM_M3_PIN, 0);
-            ledcWrite(PWM_M4_PIN, 0);
+        case AVOID_TURN: {
+          if (usCm > 0 && usCm < LOCAL_CRITICAL_CM) {
+            stopMotorsSoft();
+            avoidState = AVOID_EMERGENCY;
+            avoidStateStart = now;
+            avoidTurnRetries = 0;
+            if (inCruiseMode) cruiseStateStr = "avoiding";
+            Serial.printf("[AVOID] TURN→EMER us=%.1fcm\n", usCm);
+            break;
+          }
+          float error = normalizeAngle(turnTargetHeading - imuHeading);
+          if (abs(error) < TURN_TOLERANCE) {
+            stopMotorsSoft();
             avoidState = AVOID_PROBE;
             avoidStateStart = now;
-            Serial.println("[AVOID] TURN→PROBE, checking path");
+            Serial.printf("[AVOID] TURN→PROBE error=%.1f°\n", error);
+          } else if (now - avoidStateStart >= TURN_TIMEOUT_MS) {
+            stopMotorsSoft();
+            avoidState = AVOID_PROBE;
+            avoidStateStart = now;
+            Serial.printf("[AVOID] TURN→PROBE (timeout) error=%.1f°\n", error);
           }
           break;
+        }
 
         case AVOID_PROBE:
-          // 探路: 静止状态下检查前方距离
           if (usCm > LOCAL_SAFE_CM) {
-            // 前方安全! 找到出路
             avoidTurnRetries = 0;
+            avoidState = AVOID_NONE;
             if (inCruiseMode) {
-              // 巡航模式 → 自动恢复前进
-              avoidState = AVOID_NONE;
-              diffDrive(lastCruisePwmL, lastCruisePwmR);
-              Serial.printf("[AVOID] PROBE→RESUME cruise L=%d R=%d\n", lastCruisePwmL, lastCruisePwmR);
+              cruiseStateStr = "idle";
+              fwd(cruiseSpeed);
+              Serial.printf("[AVOID] PROBE→CRUISE 路通了,继续前进\n");
             } else {
-              // 手动模式 → 停车等待指令
-              avoidState = AVOID_NONE;
-              Serial.println("[AVOID] PROBE→CLEAR, waiting for command");
+              Serial.println("[AVOID] PROBE→CLEAR");
             }
           } else if (avoidTurnRetries >= MAX_PROBE_RETRIES) {
-            // 探路次数用尽, 放弃
-            avoidState = AVOID_NONE;
             avoidTurnRetries = 0;
-            Serial.println("[AVOID] PROBE→GIVE UP, no path found, waiting for command");
+            avoidState = AVOID_NONE;
+            if (inCruiseMode) {
+              cruiseStateStr = "idle";
+              fwd(cruiseSpeed);
+              Serial.printf("[AVOID] PROBE→CRUISE 放弃探路,沿当前方向前进\n");
+            } else {
+              Serial.println("[AVOID] PROBE→GIVE UP");
+            }
           } else {
-            // 前方仍不安全
             avoidTurnRetries++;
-            // 超过一半重试次数仍未找到出路, 换方向尝试
             if (avoidTurnRetries > MAX_PROBE_RETRIES / 2) {
               avoidTurnDir = -avoidTurnDir;
-              Serial.printf("[AVOID] PROBE→SWITCH dir=%d (retry=%d > half of %d)\n",
-                            avoidTurnDir, avoidTurnRetries, MAX_PROBE_RETRIES);
+              Serial.printf("[AVOID] SWITCH dir=%d\n", avoidTurnDir);
             }
+            turnTargetHeading = normalizeAngle(imuHeading + avoidTurnDir * TURN_ANGLE);
             avoidState = AVOID_TURN;
             avoidStateStart = now;
             if (avoidTurnDir == 1) diffDrive(200, -200);
             else diffDrive(-200, 200);
-            Serial.printf("[AVOID] PROBE→TURN dir=%d retry=%d us=%.1f\n", avoidTurnDir, avoidTurnRetries, usCm);
+            Serial.printf("[AVOID] PROBE→TURN dir=%d retry=%d target=%.1f\n", avoidTurnDir, avoidTurnRetries, turnTargetHeading);
           }
           break;
       }
+    }
+  }
+
+  if (inCruiseMode && motorRunning && avoidState == AVOID_NONE) {
+    float accMag = sqrt(imuAx * imuAx + imuAy * imuAy + imuAz * imuAz);
+    if (abs(accMag - 1.0) < STUCK_ACC_THRESHOLD) {
+      if (stuckStart == 0) stuckStart = now;
+      else if (now - stuckStart >= STUCK_TIMEOUT_MS) {
+        cruiseStateStr = "stuck";
+        diffDrive(-200, -200);
+        delay(500);
+        stopMotorsSoft();
+        stuckStart = 0;
+        avoidState = AVOID_NONE;
+        cruiseStateStr = "idle";
+        fwd(cruiseSpeed);
+        Serial.println("[STUCK] Detected! Backing up and retrying");
+      }
+    } else {
+      stuckStart = 0;
     }
   }
 

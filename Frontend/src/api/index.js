@@ -67,11 +67,9 @@ export const vehicleAPI = {
       command: 'config',
       params,
     }),
-  // 后端导航引擎巡航
-  startCruise: (deviceId, waypoints, speedPwm = 150) =>
+  startCruise: (deviceId, speedPwm = 200) =>
     request.post('/vehicle/cruise/start', {
       device_id: deviceId,
-      waypoints,
       speed_pwm: speedPwm,
     }),
   stopCruise: (deviceId) =>

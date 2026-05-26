@@ -1,8 +1,10 @@
 """
 TelemetryPoint SQLAlchemy 模型 — 对应 `telemetry_points` 表
 """
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from src.extensions import db
+
+CST = timezone(timedelta(hours=8))
 
 
 class TelemetryPoint(db.Model):
@@ -36,6 +38,9 @@ class TelemetryPoint(db.Model):
     satellites     = db.Column(db.SmallInteger,   nullable=True,  comment='GPS卫星数')
     bat_mv         = db.Column(db.Integer,         nullable=True,  comment='电池电压(mV)')
     seq            = db.Column(db.Integer,         nullable=True,  comment='消息序号')
+    cruise_active  = db.Column(db.Boolean,         nullable=True,  comment='巡航是否激活')
+    cruise_state   = db.Column(db.String(16),      nullable=True,  comment='巡航状态(idle/avoiding/recovery/stuck)')
+    avoid_state    = db.Column(db.SmallInteger,    nullable=True,  comment='避障状态机(0-5)')
     raw_ciphertext = db.Column(db.Text,           nullable=True,  comment='原始接收密文')
     recorded_at    = db.Column(db.DateTime,       nullable=False, default=lambda: datetime.now(timezone.utc),
                                index=True, comment='数据时间戳')
@@ -71,8 +76,11 @@ class TelemetryPoint(db.Model):
             'satellites':     self.satellites,
             'bat_mv':         self.bat_mv,
             'seq':            self.seq,
+            'cruise_active':  self.cruise_active,
+            'cruise_state':   self.cruise_state,
+            'avoid_state':    self.avoid_state,
             'raw_ciphertext': self.raw_ciphertext,
-            'recorded_at':    self.recorded_at.isoformat() if self.recorded_at else None,
+            'recorded_at':    self.recorded_at.astimezone(CST).isoformat() if self.recorded_at else None,
         }
 
     def __repr__(self):

@@ -8,8 +8,10 @@ NavigationEvent SQLAlchemy 模型 — 对应 `navigation_events` 表
   - 紧急停车
 """
 
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from src.extensions import db
+
+CST = timezone(timedelta(hours=8))
 
 
 class NavigationEvent(db.Model):
@@ -48,7 +50,7 @@ class NavigationEvent(db.Model):
             'wp_index':    self.wp_index,
             'wp_total':    self.wp_total,
             'state':       self.state,
-            'occurred_at': self.occurred_at.isoformat() if self.occurred_at else None,
+            'occurred_at': self.occurred_at.astimezone(CST).isoformat() if self.occurred_at else None,
         }
 
     def __repr__(self):

@@ -1,8 +1,10 @@
 """
 SecurityAuditLog SQLAlchemy 模型 — 对应 `security_audit_logs` 表
 """
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from src.extensions import db
+
+CST = timezone(timedelta(hours=8))
 
 # 允许的事件类型
 AUDIT_EVENT_TYPES = ('replay', 'ddos', 'auth_fail', 'rbac_deny', 'sig_invalid')
@@ -68,7 +70,7 @@ class SecurityAuditLog(db.Model):
             'username':         username,
             'detail':           self.detail,
             'is_blocked':       self.is_blocked,
-            'occurred_at':      self.occurred_at.isoformat() if self.occurred_at else None,
+            'occurred_at':      self.occurred_at.astimezone(CST).isoformat() if self.occurred_at else None,
         }
 
     def __repr__(self):

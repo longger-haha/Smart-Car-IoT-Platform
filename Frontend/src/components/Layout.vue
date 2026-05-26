@@ -15,13 +15,13 @@
           <el-icon><DataAnalysis /></el-icon>
           <template #title>仪表盘</template>
         </el-menu-item>
-        <el-menu-item index="/devices">
-          <el-icon><Monitor /></el-icon>
-          <template #title>设备中心</template>
-        </el-menu-item>
         <el-menu-item index="/control">
           <el-icon><Position /></el-icon>
           <template #title>控制面板</template>
+        </el-menu-item>
+        <el-menu-item index="/devices">
+          <el-icon><Monitor /></el-icon>
+          <template #title>设备中心</template>
         </el-menu-item>
         <el-menu-item index="/audit">
           <el-icon><Document /></el-icon>

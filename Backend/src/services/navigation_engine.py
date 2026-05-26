@@ -101,8 +101,8 @@ class NavigationEngine:
         ctx = self._get_context(device_id)
         ctx.pid.reset()
         ctx.cruise_start_time = time.time()
+        ctx.state = NavState.CRUISING
 
-        # 设置巡航速度
         if speed_pwm and 50 <= speed_pwm <= 255:
             ctx.cruise_speed = speed_pwm
         else:
@@ -111,13 +111,6 @@ class NavigationEngine:
         if waypoints and len(waypoints) >= 2:
             ctx.waypoints = [Waypoint(w['lat'], w['lng']) for w in waypoints]
             ctx.current_wp_index = 0
-            ctx.state = NavState.CRUISING
-            # 立即下发第一个前进指令, ESP32本地避障会判断是否安全
-            self._publish(device_id, {
-                "cmd": "diff",
-                "pwm_l": ctx.cruise_speed,
-                "pwm_r": ctx.cruise_speed,
-            })
             ctx.last_command_time = time.time()
             logger.info(
                 f'[NAV] 航点巡航启动: device={device_id} '
@@ -125,16 +118,8 @@ class NavigationEngine:
             return {"success": True,
                     "message": f"巡航启动，{len(ctx.waypoints)}个航点"}
         else:
-            # 自由巡航模式：无航点，仅避障行驶
             ctx.waypoints = []
             ctx.current_wp_index = 0
-            ctx.state = NavState.CRUISING
-            # 立即下发第一个前进指令
-            self._publish(device_id, {
-                "cmd": "diff",
-                "pwm_l": ctx.cruise_speed,
-                "pwm_r": ctx.cruise_speed,
-            })
             ctx.last_command_time = time.time()
             logger.info(
                 f'[NAV] 自由巡航启动: device={device_id} (无航点，仅避障)')
@@ -168,55 +153,34 @@ class NavigationEngine:
 
     def on_telemetry(self, device_id: str, data: dict):
         """
-        遥测数据回调 — 核心决策循环。
+        遥测数据回调。
 
-        由 mqtt_client._process_telemetry() 在写入DB后调用。
+        巡逻巡航模式下, ESP32 本地自主完成避障和巡航,
+        后端只更新 IMU 状态和巡航状态, 不下发任何控制指令。
+        当巡航状态变化时记录导航事件。
         """
         ctx = self._get_context(device_id)
 
-        # 1. IMU 融合
         heading = self._update_imu(ctx, data)
 
-        # 2. 电池检查
-        bat_mv = data.get('bat_mv')
-        if bat_mv is not None and bat_mv < CRITICAL_BATTERY_MV:
-            if ctx.state in (NavState.CRUISING, NavState.OBSTACLE_AVOID):
-                ctx.state = NavState.IDLE
-                self._publish(device_id, {"cmd": "stop"})
-                logger.warning(
-                    f'[NAV] 电池严重不足 {bat_mv}mV, 巡航中止: '
-                    f'device={device_id}')
-            return
+        cruise_active = data.get('cruise_active', False)
+        cruise_state = data.get('cruise_state', 'idle')
+        avoid_state = data.get('avoid_state', 0)
 
-        # 3. 安全停车检查 (所有模式下生效, 包括手动控制)
-        us_cm = data.get('ultrasonic_cm')
-        ir_l = data.get('ir_l', 0)
-        ir_r = data.get('ir_r', 0)
-        if us_cm is not None and 0 < us_cm < CRITICAL_DISTANCE_CM:
-            # 紧急停车: 超声波 < 15cm 无论什么模式都必须停 (ESP32本地已100ms响应, 此为兜底)
-            self._publish(device_id, {"cmd": "stop"})
-            if ctx.state in (NavState.CRUISING, NavState.OBSTACLE_AVOID):
-                ctx.state = NavState.IDLE
-            logger.warning(
-                f'[SAFETY] 紧急停车! us={us_cm}cm, '
-                f'mode={ctx.state}: device={device_id}')
-            return
+        prev_state = ctx.state
 
-        # 4. 避障检查 (仅在巡航/避障状态下生效, IDLE/ARRIVED 时不干预)
-        if ctx.state in (NavState.CRUISING, NavState.OBSTACLE_AVOID):
-            avoid_cmd = self._check_obstacle(ctx, data)
-            if avoid_cmd:
-                if ctx.state == NavState.CRUISING:
-                    ctx.state = NavState.OBSTACLE_AVOID
-                self._publish(device_id, avoid_cmd)
-                return
+        if cruise_active and cruise_state != 'idle':
+            ctx.state = NavState.OBSTACLE_AVOID if cruise_state == 'avoiding' else NavState.CRUISING
+        elif cruise_active:
+            ctx.state = NavState.CRUISING
+        elif prev_state in (NavState.CRUISING, NavState.OBSTACLE_AVOID):
+            if ctx.cruise_start_time and (time.time() - ctx.cruise_start_time < 8):
+                pass
             else:
-                if ctx.state == NavState.OBSTACLE_AVOID:
-                    ctx.state = NavState.CRUISING
+                ctx.state = NavState.IDLE
 
-        # 4. 巡航决策
-        if ctx.state == NavState.CRUISING:
-            self._cruise_step(device_id, ctx, data, heading)
+        if ctx.state != prev_state:
+            self._record_event(device_id, ctx.state, prev_state, data)
 
     # ── 内部方法 ──────────────────────────────────────────────
 
@@ -353,6 +317,54 @@ class NavigationEngine:
     def _publish(device_id: str, payload: dict):
         """发布指令到设备"""
         publish_command(device_id, payload)
+
+    @staticmethod
+    def _record_event(device_id: str, new_state: str,
+                      prev_state: str, data: dict):
+        """根据巡航状态变化记录导航事件"""
+        from src.extensions import db
+        from src.models.navigation_event import NavigationEvent
+
+        event_type = None
+        detail = None
+
+        if prev_state == NavState.IDLE and new_state == NavState.CRUISING:
+            event_type = 'CRUISE_STARTED'
+            detail = '巡逻巡航启动'
+        elif prev_state == NavState.CRUISING and new_state == NavState.OBSTACLE_AVOID:
+            event_type = 'OBSTACLE_DETECTED'
+            us_cm = data.get('ultrasonic_cm')
+            ir_l = data.get('ir_l', 0)
+            ir_r = data.get('ir_r', 0)
+            detail = f'检测到障碍 us={us_cm}cm ir_l={ir_l} ir_r={ir_r}'
+        elif prev_state == NavState.OBSTACLE_AVOID and new_state == NavState.CRUISING:
+            event_type = 'OBSTACLE_CLEARED'
+            detail = '障碍已清除，恢复巡航'
+        elif new_state == NavState.IDLE and prev_state in (NavState.CRUISING, NavState.OBSTACLE_AVOID):
+            event_type = 'ABORTED'
+            detail = '巡航已停止'
+
+        if not event_type:
+            return
+
+        lat = data.get('latitude')
+        lng = data.get('longitude')
+
+        evt = NavigationEvent(
+            device_id=device_id,
+            event_type=event_type,
+            detail=detail,
+            lat=lat,
+            lng=lng,
+            state=new_state,
+        )
+        db.session.add(evt)
+        try:
+            db.session.commit()
+            logger.info(f'[NAV_EVENT] {event_type}: device={device_id} {detail}')
+        except Exception as e:
+            db.session.rollback()
+            logger.warning(f'[NAV_EVENT] Failed to save: {e}')
 
 
 # ── 全局单例 ──────────────────────────────────────────────────

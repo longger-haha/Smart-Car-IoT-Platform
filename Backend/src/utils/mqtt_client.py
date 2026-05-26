@@ -377,6 +377,9 @@ def _process_telemetry(device_id: str, raw_payload: bytes, sub_type: str = None)
             satellites     = data.get('satellites'),
             bat_mv         = data.get('bat_mv'),
             seq            = data.get('seq'),
+            cruise_active  = data.get('cruise_active'),
+            cruise_state   = data.get('cruise_state'),
+            avoid_state    = data.get('avoid_state'),
             raw_ciphertext = raw_ciphertext,
             recorded_at    = datetime.now(timezone.utc),
         )

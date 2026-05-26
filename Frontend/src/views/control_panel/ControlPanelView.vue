@@ -48,40 +48,28 @@
 
         <el-card v-else shadow="hover" class="panel-card">
           <template #header>
-            <span>巡航控制</span>
-            <el-tag v-if="cruiseStatus" :type="cruiseStateTagType" size="small" style="margin-left:8px;">{{ cruiseStateLabel }}</el-tag>
+            <span>巡逻巡航</span>
+            <el-tag v-if="cruiseActive" :type="cruiseStateTagType" size="small" style="margin-left:8px;">{{ cruiseStateLabel }}</el-tag>
           </template>
           <div class="cruise-actions">
-            <el-button type="success" :loading="routeLoading" :disabled="!selectedDeviceId" @click="startCruise" style="flex:1;">启动巡航</el-button>
-            <el-button type="danger" :disabled="!selectedDeviceId" @click="stopCruise" style="flex:1;">停止巡航</el-button>
+            <el-button type="success" :loading="routeLoading" :disabled="!selectedDeviceId || cruiseActive" @click="startCruise" style="flex:1;">启动巡航</el-button>
+            <el-button type="danger" :disabled="!selectedDeviceId || !cruiseActive" @click="stopCruise" style="flex:1;">停止巡航</el-button>
           </div>
-          <div v-if="cruiseStatus" class="cruise-detail">
+          <div v-if="cruiseActive" class="cruise-detail">
             <div class="cruise-detail-row">
-              <span class="detail-label">导航状态</span>
-              <span class="detail-value" :style="{ color: navStateColor }">{{ cruiseStateLabel }}</span>
+              <span class="detail-label">巡航状态</span>
+              <span class="detail-value" :style="{ color: cruiseStateColor }">{{ cruiseStateLabel }}</span>
             </div>
-            <div class="cruise-detail-row">
-              <span class="detail-label">当前航点</span>
-              <span class="detail-value">{{ (cruiseStatus.current_wp_index || 0) + 1 }} / {{ cruiseStatus.total_waypoints || 0 }}</span>
-            </div>
-            <div v-if="cruiseStatus.heading != null" class="cruise-detail-row">
+            <div v-if="positionData?.imu_heading != null" class="cruise-detail-row">
               <span class="detail-label">IMU 航向</span>
-              <span class="detail-value">{{ cruiseStatus.heading.toFixed(1) }}°</span>
-            </div>
-            <div v-if="cruiseStatus.gyro_z != null" class="cruise-detail-row">
-              <span class="detail-label">角速度 Z</span>
-              <span class="detail-value">{{ cruiseStatus.gyro_z.toFixed(2) }}°/s</span>
+              <span class="detail-value">{{ positionData.imu_heading.toFixed(1) }}°</span>
             </div>
             <div class="cruise-detail-row">
-              <span class="detail-label">巡航时长</span>
-              <span class="detail-value">{{ cruiseDurationDisplay }}</span>
-            </div>
-            <div class="cruise-detail-row">
-              <span class="detail-label">行驶距离</span>
-              <span class="detail-value">{{ distanceDisplay }}</span>
+              <span class="detail-label">避障阶段</span>
+              <span class="detail-value">{{ avoidStateLabel }}</span>
             </div>
           </div>
-          <div v-else class="cruise-hint">选择设备后启动自动巡航</div>
+          <div v-else class="cruise-hint">选择设备后启动巡逻巡航，小车将自主避障行驶</div>
         </el-card>
 
         <el-card shadow="hover" class="panel-card">
@@ -241,7 +229,7 @@
                 </div>
               </div>
             </el-collapse-item>
-            <el-collapse-item title="避障超时 (P2)" name="p2">
+            <el-collapse-item title="避障参数 (P2)" name="p2">
               <div class="config-row">
                 <span class="config-label">后退超时</span>
                 <div class="config-slider-wrap">
@@ -250,9 +238,16 @@
                 </div>
               </div>
               <div class="config-row">
+                <span class="config-label">转向角度</span>
+                <div class="config-slider-wrap">
+                  <el-slider v-model="configForm.turn_angle" :min="30" :max="180" :step="5" :disabled="!configForm.avoid_enabled" />
+                  <span class="config-val">{{ configForm.turn_angle }}°</span>
+                </div>
+              </div>
+              <div class="config-row">
                 <span class="config-label">转向超时</span>
                 <div class="config-slider-wrap">
-                  <el-slider v-model="configForm.turn_timeout_ms" :min="200" :max="2000" :step="100" :disabled="!configForm.avoid_enabled" />
+                  <el-slider v-model="configForm.turn_timeout_ms" :min="500" :max="5000" :step="100" :disabled="!configForm.avoid_enabled" />
                   <span class="config-val">{{ (configForm.turn_timeout_ms / 1000).toFixed(1) }}s</span>
                 </div>
               </div>
@@ -289,9 +284,8 @@
               <span v-if="positionData.satellites"> · {{ positionData.satellites }} 颗卫星</span>
             </span>
             <span v-else class="position-info">暂无位置数据</span>
-            <span v-if="cruiseStatus?.stats" class="trajectory-stats">
-              {{ cruiseStatus.stats.total_waypoints_reached || 0 }}/{{ cruiseStatus.stats.wp_total || 0 }} 航点
-              · {{ cruiseStatus.stats.distance_traveled_m || 0 }}m
+            <span v-if="cruiseActive" class="trajectory-stats" style="color:#22c55e;">
+              巡航中 · {{ cruiseStateLabel }}
             </span>
           </div>
         </el-card>
@@ -303,7 +297,7 @@
               <el-button size="small" @click="loadNavEvents">刷新</el-button>
             </div>
           </template>
-          <el-timeline v-if="navEvents.length > 0" class="nav-timeline">
+          <el-timeline v-if="navEvents.length > 0" ref="navTimelineRef" class="nav-timeline">
             <el-timeline-item
               v-for="evt in navEvents"
               :key="evt.id"
@@ -335,15 +329,32 @@ import { AMAP_KEY, AMAP_VERSION, AMAP_SECURITY_KEY } from '@/config/amap'
 import { vehicleAPI, deviceAPI } from '@/api'
 import { formatTime } from '@/utils/format'
 
+const cruiseActive = computed(() => {
+  if (localCruiseActive.value) return true
+  if (!positionData.value?.cruise_active) return false
+  if (cruiseStartTime.value && Date.now() - cruiseStartTime.value < 8000) return true
+  return false
+})
+
 const cruiseStateLabel = computed(() => {
-  const s = cruiseStatus.value?.state
-  const map = { idle: '空闲', cruising: '巡航中', obstacle_avoid: '避障中', arrived: '已到达', aborted: '已中止' }
-  return map[s] || s || '未知'
+  const s = positionData.value?.cruise_state
+  const map = { idle: '前进巡航', avoiding: '避障中', stuck: '卡死脱困' }
+  return map[s] || (cruiseActive.value ? '巡航中' : '未巡航')
 })
 const cruiseStateTagType = computed(() => {
-  const s = cruiseStatus.value?.state
-  const map = { idle: 'info', cruising: 'success', obstacle_avoid: 'warning', arrived: '', aborted: 'danger' }
+  const s = positionData.value?.cruise_state
+  const map = { idle: 'success', avoiding: 'warning', stuck: 'danger' }
   return map[s] || 'info'
+})
+const cruiseStateColor = computed(() => {
+  const s = positionData.value?.cruise_state
+  const map = { idle: '#22c55e', avoiding: '#f59e0b', stuck: '#ef4444' }
+  return map[s] || '#8892a4'
+})
+const avoidStateLabel = computed(() => {
+  const s = positionData.value?.avoid_state
+  const map = { 0: '无避障', 1: '紧急停车', 2: '后退', 3: '转向', 4: '探路' }
+  return map[s] ?? '--'
 })
 
 const deviceList = ref([])
@@ -357,6 +368,8 @@ const gearOptions = [
   { value: 'high', label: '高速', icon: '🏎', pwm: 255 },
 ]
 const routeLoading = ref(false)
+const localCruiseActive = ref(false)
+const cruiseStartTime = ref(0)
 const mapLoading = ref(false)
 const configActiveNames = ref(['p0'])
 
@@ -365,19 +378,20 @@ let trajectoryPolyline = null
 let positionMarker = null
 
 const navEvents = ref([])
-const cruiseStatus = ref(null)
+const navTimelineRef = ref(null)
 const positionData = ref(null)
 const configLoading = ref(false)
 
 const configForm = reactive({
   avoid_enabled: true,
-  critical_cm: 10,
-  warn_cm: 15,
-  safe_cm: 30,
+  critical_cm: 5,
+  warn_cm: 10,
+  safe_cm: 20,
   speed_pwm: 200,
   telemetry_ms: 2000,
-  backward_timeout_ms: 1000,
-  turn_timeout_ms: 800,
+  backward_timeout_ms: 300,
+  turn_angle: 30,
+  turn_timeout_ms: 500,
   max_probe_retries: 6,
 })
 
@@ -422,9 +436,9 @@ function onModeChange(mode) {
     controlMode.value = 'manual'
     return
   }
-  if (mode === 'manual' && cruiseStatus.value?.state === 'cruising') {
+  if (mode === 'manual' && cruiseActive.value) {
     ElMessageBox.confirm(
-      '当前正在自动巡航中，切换到手动模式将停止巡航，是否继续？',
+      '当前正在巡逻巡航中，切换到手动模式将停止巡航，是否继续？',
       '确认切换',
       { confirmButtonText: '确认', cancelButtonText: '取消', type: 'warning' }
     ).then(() => { stopCruise() }).catch(() => { controlMode.value = 'cruise' })
@@ -433,10 +447,10 @@ function onModeChange(mode) {
 
 async function stopCruise() {
   if (!selectedDeviceId.value) return
+  localCruiseActive.value = false
   try {
     const res = await vehicleAPI.stopCruise(selectedDeviceId.value)
     ElMessage.success(res.message || '巡航已停止')
-    cruiseStatus.value = null
   } catch (err) {
     ElMessage.error(err.response?.data?.error || '停止巡航失败')
   }
@@ -446,17 +460,19 @@ async function startCruise() {
   if (!selectedDeviceId.value) return
   try {
     await ElMessageBox.confirm(
-      '确认启动自动巡航？导航引擎将在后端接管控制。',
+      '确认启动巡逻巡航？小车将自主前进并避障，可通过停止按钮随时中止。',
       '确认启动巡航',
       { confirmButtonText: '确认启动', cancelButtonText: '取消', type: 'warning' }
     )
   } catch { return }
+  localCruiseActive.value = true
+  cruiseStartTime.value = Date.now()
   routeLoading.value = true
   try {
-    const res = await vehicleAPI.startCruise(selectedDeviceId.value, [], SPEED_MAP[speedGear.value])
-    ElMessage.success(res.message || '自动巡航已启动')
-    loadNavEvents()
+    const res = await vehicleAPI.startCruise(selectedDeviceId.value, SPEED_MAP[speedGear.value])
+    ElMessage.success(res.message || '巡逻巡航已启动')
   } catch (err) {
+    localCruiseActive.value = false
     ElMessage.error(err.response?.data?.error || '巡航启动失败')
   } finally {
     routeLoading.value = false
@@ -505,19 +521,16 @@ async function loadDevices() {
   }
 }
 
-async function refreshCruiseStatus() {
-  if (!selectedDeviceId.value) return
-  try {
-    const res = await vehicleAPI.getCruiseStatus(selectedDeviceId.value)
-    cruiseStatus.value = res
-  } catch (err) { console.error('刷新巡航状态失败', err) }
-}
-
 async function fetchPosition() {
   if (!selectedDeviceId.value) return
   try {
     const res = await vehicleAPI.getPosition(selectedDeviceId.value)
     positionData.value = res
+    if (localCruiseActive.value && res.cruise_active === false) {
+      if (Date.now() - cruiseStartTime.value > 8000) {
+        localCruiseActive.value = false
+      }
+    }
     drawPositionMarker(res)
   } catch (err) { console.error('获取位置失败', err) }
 }
@@ -574,19 +587,21 @@ async function loadNavEvents() {
   try {
     const res = await vehicleAPI.getNavEvents(selectedDeviceId.value, null, 50)
     navEvents.value = res.events || []
+    nextTick(() => {
+      const el = document.querySelector('.nav-timeline')
+      if (el) el.scrollTop = el.scrollHeight
+    })
   } catch (err) { navEvents.value = [] }
 }
 
 function onDeviceChange(deviceId) {
   navEvents.value = []
-  cruiseStatus.value = null
   positionData.value = null
   if (positionMarker) { positionMarker.setMap(null); positionMarker = null }
   if (trajectoryPolyline) { map.remove(trajectoryPolyline); trajectoryPolyline = null }
 
   if (deviceId) {
     loadNavEvents()
-    refreshCruiseStatus()
     fetchPosition()
     startPolling()
   } else {
@@ -596,7 +611,7 @@ function onDeviceChange(deviceId) {
 
 function startPolling() {
   stopPolling()
-  posPollTimer = setInterval(() => { fetchPosition(); refreshCruiseStatus() }, 3000)
+  posPollTimer = setInterval(() => { fetchPosition() }, 3000)
   navEventTimer = setInterval(loadNavEvents, 8000)
 }
 
@@ -614,23 +629,6 @@ function eventTimelineType(type) {
   const map = { CRUISE_STARTED: 'primary', WAYPOINT_REACHED: 'success', ARRIVED: 'success', OBSTACLE_DETECTED: 'warning', EMERGENCY_STOP: 'danger', ABORTED: 'danger' }
   return map[type] || 'info'
 }
-
-const navStateColor = computed(() => {
-  const s = cruiseStatus.value?.state || cruiseStatus.value?.nav_state
-  const colors = { idle: '#8892a4', dispatched: '#3b82f6', cruising: '#22c55e', avoiding: '#f59e0b', arrived: '#22c55e', aborted: '#ef4444', unknown: '#8892a4' }
-  return colors[s] || '#8892a4'
-})
-const cruiseDurationDisplay = computed(() => {
-  const d = cruiseStatus.value?.stats?.cruise_duration_s
-  if (!d || d <= 0) return '--'
-  const m = Math.floor(d / 60)
-  const s = d % 60
-  return m > 0 ? `${m}分${s}秒` : `${s}秒`
-})
-const distanceDisplay = computed(() => {
-  const d = cruiseStatus.value?.stats?.distance_traveled_m
-  return d != null ? `${d} m` : '--'
-})
 
 onMounted(async () => {
   await loadDevices()

@@ -450,17 +450,24 @@ function stopDashPolling() {
   if (dashPosTimer) { clearInterval(dashPosTimer); dashPosTimer = null }
 }
 
+function handleResize() {
+  pieChart?.resize()
+  gaugeChart?.resize()
+}
+
 onMounted(async () => {
   fetchStats()
   await loadDashDevices()
   await nextTick()
   initDashTrajectoryMap()
   timer = setInterval(fetchStats, 15000)
+  window.addEventListener('resize', handleResize)
 })
 
 onUnmounted(() => {
   if (timer) clearInterval(timer)
   stopDashPolling()
+  window.removeEventListener('resize', handleResize)
   pieChart?.dispose()
   gaugeChart?.dispose()
 })
@@ -468,7 +475,8 @@ onUnmounted(() => {
 
 <style scoped>
 .dashboard {
-  max-width: 1400px;
+  width: 100%;
+  min-width: 0;
 }
 
 .section-row {
@@ -563,6 +571,36 @@ onUnmounted(() => {
 .chart-container {
   width: 100%;
   height: 300px;
+}
+
+@media (max-width: 768px) {
+  .chart-container {
+    height: 220px;
+  }
+  .stat-card :deep(.el-card__body) {
+    padding: 16px;
+    gap: 12px;
+  }
+  .stat-icon {
+    width: 40px;
+    height: 40px;
+    border-radius: 8px;
+  }
+  .stat-icon :deep(.el-icon) {
+    font-size: 20px;
+  }
+  .stat-value {
+    font-size: 22px;
+  }
+  .stat-label {
+    font-size: 12px;
+  }
+  .page-header h2 {
+    font-size: 18px;
+  }
+  #dash-trajectory-map {
+    height: 260px !important;
+  }
 }
 
 .safety-detail {

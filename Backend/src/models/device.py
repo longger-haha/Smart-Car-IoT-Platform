@@ -1,8 +1,10 @@
 """
 Device SQLAlchemy 模型 — 对应 `devices` 表（设备白名单）
 """
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from src.extensions import db
+
+CST = timezone(timedelta(hours=8))
 
 
 class Device(db.Model):
@@ -40,8 +42,8 @@ class Device(db.Model):
             'device_id':     self.device_id,
             'name':          self.name,
             'status':        self.status,
-            'last_seen_at':  self.last_seen_at.isoformat() if self.last_seen_at else None,
-            'registered_at': self.registered_at.isoformat() if self.registered_at else None,
+            'last_seen_at':  self.last_seen_at.astimezone(CST).isoformat() if self.last_seen_at else None,
+            'registered_at': self.registered_at.astimezone(CST).isoformat() if self.registered_at else None,
         }
         if include_secret:
             data['device_secret'] = self.device_secret

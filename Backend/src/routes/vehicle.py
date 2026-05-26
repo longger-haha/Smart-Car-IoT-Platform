@@ -29,7 +29,7 @@ from flask_jwt_extended import jwt_required
 
 vehicle_bp = Blueprint('vehicle', __name__)
 
-VALID_COMMANDS = {'forward', 'backward', 'left', 'right', 'stop', 'diff', 'config'}
+VALID_COMMANDS = {'forward', 'backward', 'left', 'right', 'stop', 'diff', 'config', 'cruise'}
 MAX_WAYPOINTS = 50
 MIN_WAYPOINTS = 2
 
@@ -64,7 +64,7 @@ def send_command():
             return jsonify({'error': 'config 指令必须包含 params 字段'}), 400
         allowed_keys = {
             'speed_pwm', 'telemetry_ms', 'critical_cm', 'warn_cm', 'safe_cm',
-            'backward_timeout_ms', 'turn_timeout_ms', 'max_probe_retries',
+            'backward_timeout_ms', 'turn_angle', 'turn_timeout_ms', 'max_probe_retries',
             'avoid_enabled', 'wifi_scan_max_aps',
         }
         filtered = {k: v for k, v in params.items() if k in allowed_keys}
@@ -316,44 +316,40 @@ def get_device_risk(device_id: str):
 @require_device_ownership
 def start_cruise():
     """
-    启动后端自动巡航 (导航引擎接管)
+    启动巡逻式自动巡航 (ESP32 本地自主巡航)
 
     Request JSON:
         {
             "device_id": "...",
-            "waypoints": [{"lat": 39.9, "lng": 116.4}, ...]  // 可选
+            "speed_pwm": 200
         }
 
     Response 200:
-        {"success": true, "message": "巡航启动，5个航点"}
+        {"success": true, "message": "巡逻巡航已启动"}
     """
     data = request.get_json(silent=True) or {}
     device_id = data.get('device_id', '').strip()
-    waypoints = data.get('waypoints', [])
-    speed_pwm = data.get('speed_pwm', 150)
+    speed_pwm = data.get('speed_pwm', 200)
 
     if not device_id:
         return jsonify({'error': 'device_id 不能为空'}), 400
 
-    # 航点可选：有航点则按航点巡航，无航点则自由巡航（仅避障）
-    if waypoints:
-        if not isinstance(waypoints, list) or len(waypoints) < MIN_WAYPOINTS:
-            return jsonify({'error': f'航点数量不足，至少需要 {MIN_WAYPOINTS} 个'}), 400
-        if len(waypoints) > MAX_WAYPOINTS:
-            return jsonify({'error': f'航点超限，最多 {MAX_WAYPOINTS} 个'}), 400
+    speed_pwm = max(150, min(255, int(speed_pwm)))
 
-        for i, wp in enumerate(waypoints):
-            if not isinstance(wp, dict):
-                return jsonify({'error': f'第 {i+1} 个航点格式错误'}), 400
-            if 'lat' not in wp or 'lng' not in wp:
-                return jsonify({'error': f'第 {i+1} 个航点缺少 lat/lng'}), 400
+    publish_command(device_id, {
+        'command': 'cruise',
+        'speed_pwm': speed_pwm,
+    })
 
-    result = nav_engine.start_cruise(device_id, waypoints, speed_pwm=speed_pwm)
+    nav_engine.start_cruise(device_id, [], speed_pwm=speed_pwm)
 
-    if result['success']:
-        return jsonify(result), 200
-    else:
-        return jsonify({'error': result['message']}), 400
+    log = logging.getLogger(__name__)
+    log.info(f'[CRUISE] Patrol cruise started: device={device_id} speed={speed_pwm}')
+
+    return jsonify({
+        'success': True,
+        'message': f'巡逻巡航已启动 (速度PWM={speed_pwm})',
+    }), 200
 
 
 @vehicle_bp.post('/cruise/stop')
@@ -361,13 +357,13 @@ def start_cruise():
 @require_device_ownership
 def stop_cruise():
     """
-    停止后端自动巡航
+    停止自动巡航
 
     Request JSON:
         {"device_id": "..."}
 
     Response 200:
-        {"success": true, "message": "巡航已中止"}
+        {"success": true, "message": "巡航已停止"}
     """
     data = request.get_json(silent=True) or {}
     device_id = data.get('device_id', '').strip()
@@ -375,9 +371,11 @@ def stop_cruise():
     if not device_id:
         return jsonify({'error': 'device_id 不能为空'}), 400
 
-    result = nav_engine.stop_cruise(device_id)
+    publish_command(device_id, {'command': 'stop'})
 
-    return jsonify(result), 200
+    nav_engine.stop_cruise(device_id)
+
+    return jsonify({'success': True, 'message': '巡航已停止'}), 200
 
 
 @vehicle_bp.get('/cruise/status/<string:device_id>')
