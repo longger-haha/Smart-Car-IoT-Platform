@@ -36,6 +36,10 @@ const props = defineProps({
   telemetryData: {
     type: Object,
     default: () => ({})
+  },
+  deviceOnline: {
+    type: Boolean,
+    default: true
   }
 })
 
@@ -74,6 +78,8 @@ const initCharts = () => {
 }
 
 const updateCharts = () => {
+  if (!props.deviceOnline) return
+
   const now = new Date().toLocaleTimeString('zh-CN')
 
   timeLabels.value.push(now)

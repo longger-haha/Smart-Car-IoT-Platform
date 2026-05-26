@@ -58,7 +58,7 @@
 
     <el-row :gutter="16" class="section-row">
       <el-col :span="24">
-        <SensorCharts :telemetry-data="dashPositionData ?? {}" />
+        <SensorCharts :telemetry-data="dashPositionData ?? {}" :device-online="dashPositionData?.device_online !== false" />
       </el-col>
     </el-row>
 
