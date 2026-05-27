@@ -15,64 +15,68 @@
 
 ## 2. 标准项目根目录结构规划 (Project Tree)
 
+> 最后更新：2026-05-23。当前项目使用 ESP32 作为主控。
+
 请全员将代码严格放置在对应层级：
 
 ```text
 SmartRover/ (项目根目录)
-├── docker-compose.yml               <--- [新增部署编排] 一键拉起云端服务簇
-├── .env                             <--- [新增部署编排] 存放机密环境变量与密码
+├── docker-compose.yml               # Docker Compose 服务编排 (mysql/mosquitto/backend/frontend)
+├── README.md                        # 项目说明
+├── .env                             # 环境变量 (高德Key、数据库密码、JWT密钥等)
 │
-├── Frontend/                        <--- B同学：前端大屏与 Web 面板主控区
-│   ├── Dockerfile                   <--- [新增容器化] Vue 多阶段构建脚本
-│   ├── nginx.conf                   <--- [新增容器化] Nginx 代理与伪静态配置
+├── Frontend/                        # Vue 3 前端应用
+│   ├── Dockerfile                   # Nginx Alpine 多阶段构建
+│   ├── nginx.conf                   # Nginx 反向代理配置 (API proxy_pass + WebSocket)
 │   ├── package.json
-│   ├── vite.config.js               # 代理设置，彻底解决跨域
-│   ├── public/
+│   ├── vite.config.js               # Vite 配置 (代理设置解决跨域)
 │   └── src/
-│       ├── api/                     # 请求层 (集中管理对 Python 的 Axios 封装 API)
-│       ├── assets/                  # 静态资源 (Logo、背景等)
-│       ├── components/              # Vue 共用组件 (例如：红色爆闪告警灯组件)
-│       ├── router/                  # 路由表 (处理后台鉴权页面拦截)
-│       ├── utils/                   # 工具类 (前端哈希处理协助库)
+│       ├── api/                     # Axios API 封装 (auth/device/telemetry/vehicle/audit/dashboard)
+│       ├── assets/                  # 静态资源
+│       ├── components/              # 共用组件 (Layout 布局)
+│       ├── router/                  # 路由表 (含 JWT 鉴权页面拦截)
+│       ├── utils/                   # 工具类 (时间格式化等)
 │       └── views/
-│           ├── dashboard/           # 大盘首屏 (温湿度图表与定位地图)
-│           ├── device_center/       # 资产中心 (入网设备列表与秘钥分发)
-│           ├── control_panel/       # 反控重地 (操控摇杆)
-│           └── audit_logs/          # 防御全景 (记录阻断日志展示与透明加解密对比视窗)
+│           ├── dashboard/           # 监控仪表盘 (传感器图表 + 设备状态)
+│           ├── device_center/       # 设备管理中心 (注册/列表/详情/遥测趋势)
+│           ├── control_panel/       # 控制面板 (手动方向键 + 巡逻巡航 + 避障参数配置)
+│           └── audit_logs/          # 安全审计日志展示
 │
-├── Backend/                         <--- A 同学：Python 核心鉴权与路由分法区
-│   ├── Dockerfile                   <--- [新增容器化] Python 环境及 Gunicorn 运行栈
-│   ├── requirements.txt             # 依赖清单
-│   ├── app.py                       # WSGI 启动主入口程序
-│   ├── config.py                    # 配置文件 (MySQL 连接字符串、秘钥盐值)
-│   ├── src/
-│   │   ├── models/                  # SQLAlchemy 数据库映射模型 (模型包含 User, Device, Telemetry, CyberAttackLog)
-│   │   ├── routes/                  # 接口控制器 (分发如 /api/auth, /api/devices, /api/telemetry 等视图)
-│   │   ├── services/                # 沉重的核心逻辑层 (例如 MQTT 的下行推送动作、日志持久化存入逻辑)
-│   │   └── utils/
-│   │       ├── crypto_tool.py       # (关键安全库)：用 Python 实现的 AES 和 SHA-256 打签和解签轮子
-│   │       ├── mqtt_client.py       # paho-mqtt 连接实例，负责长驻内存监听硬件数据
-│   │       └── auth_interceptor.py  # (关键网关库)：基于 JWT 和短窗口的防重放与防 DDos 拦截器
-│   │
-├── Deploy_Config/                   <--- [新增] 部署挂载重地：服务持久化配置区
-│   ├── mosquitto/                   # 映射到宿主机的 MQTT 参数与 SSL 证书
-│   └── mysql/                       # 映射 MySQL 数据卷防重启丢失
+├── Backend/                         # Python Flask 后端
+│   ├── Dockerfile                   # Python 3.11 多阶段构建 + Gunicorn
+│   ├── requirements.txt             # Python 依赖清单
+│   ├── app.py                       # WSGI 启动主入口
+│   ├── config.py                    # 应用配置 (MySQL/MQTT/JWT/导航引擎参数)
+│   └── src/
+│       ├── models/                  # SQLAlchemy 数据模型
+│       │   ├── user.py, device.py, telemetry.py
+│       │   ├── navigation_event.py, audit_log.py
+│       ├── routes/                  # API 路由 (auth/vehicle/devices/telemetry/dashboard/audit)
+│       ├── services/                # 核心业务模块
+│       │   ├── navigation_engine.py      # 导航决策引擎 (兜底保护)
+│       │   ├── pid_controller.py         # PID 航向控制器
+│       │   ├── imu_fusion.py             # IMU 互补滤波
+│       │   └── obstacle_avoidance.py     # 避障决策引擎
+│       └── utils/                  # 工具模块
+│           ├── mqtt_client.py            # MQTT 长连接 (自动识别AES/XOR/PLAIN加密)
+│           ├── crypto_tool.py            # AES/XOR 加解密 + HMAC/XOR 签名
+│           ├── cruise_security.py        # 巡航安全 (频率限制/重放检测/评分)
+│           ├── auth_interceptor.py       # JWT 鉴权 + 设备归属校验
+│           └── heartbeat_checker.py      # 设备心跳离线检测
 │
-├── Edge_Arduino/                    <--- C 同学：边缘执行器代码集
-│   ├── SmartRover.ino               # 核心执行控制逻辑 (包含 PID 和传感器拉取循环)
-│   ├── network_layer.h              # 和云端的 MQTT/TLS 通信模块
-│   └── security_crypto.h            # 基于 C++ 的软加解密依赖轮子
+├── Firmware/                        # 硬件固件代码
+│   └── smartrover_esp32/            # ESP32 固件
+│       └── smartrover_esp32.ino     # 双核: 本地避障(100ms) + 巡逻巡航
 │
-├── Scripts_Mock/                    <--- 测试与演习攻击套件 (宪章强制要求项)
-│   ├── mock_sensor.py               # 虚假发包脚本：在无 Arduino 的情况下模拟环境坐标发往后端。
-│   ├── replay_attack_sim.py         # 红蓝对抗脚本：专门尝试发送过期数据以触发平台大屏亮起红灯。
-│   └── ddos_pam.py                  # Ddos 模拟脚本：高频猛点向后台发数据，打出触发阻断的效果。
+├── Deploy_Config/                   # 部署中间件配置
+│   └── mosquitto/config/            # Mosquitto MQTT Broker 配置
 │
-└── Docs/
-    ├── sql/
-    │   └── init_struct.sql          # MySQL MySQL 的建库和建表语句
-    ├── Platform_Functional_Requirements.md
-    └── IoT_Project_Plan.md
+└── Docs/                            # 项目文档
+    ├── sql/                         # SQL 脚本 (init_struct + 迁移脚本)
+    ├── 操作与巡航指南.md             # 小车操作手册 (当前主要参考)
+    ├── 混合架构完整方案.md           # 未来演进规划 (ESP32 全自主方案)
+    ├── ESP32接线图.md               # ESP32 引脚接线参考
+    └── Platform_Project_Structure.md  # 本文档
 ```
 
 ## 3. 开发落地顺序与指导 (Execution Order)
