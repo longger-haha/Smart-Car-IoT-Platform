@@ -32,14 +32,14 @@
 
 // ═══ 配置 ═══
 
-const char* WIFI_SSID     = "REDMI K80";
+const char* WIFI_SSID     = "REDMI K80 Utral";
 const char* WIFI_PASS     = "88888888";
-const char* MQTT_HOST     = "10.98.142.61";
+const char* MQTT_HOST     = "10.255.128.189";
 const int   MQTT_PORT     = 1883;
 const char* MQTT_USER     = "";
 const char* MQTT_PASS     = "";
-const char* DEVICE_ID     = "smartrover_666";
-const char* DEVICE_SECRET = "967dd871b6406129dfb3833058a945da6f0bd556c94ee1c7220c6fbd31743725";
+const char* DEVICE_ID     = "10.255.128.189";
+const char* DEVICE_SECRET = "49b09ed9917792f9d59954dfb97b44a87bb930c35e918de86c47d1407f60ea06";
 const char* AES_KEY_STR   = "SmartRover2026!!";  // 16 bytes
 
 unsigned long TELEMETRY_MS = 2000;
@@ -871,6 +871,8 @@ void loop() {
       readIRDebounced(irL, irR);
       readMPU6050();
 
+      bool irTrigger = (irL || irR) && (usCm > LOCAL_SAFE_CM || usCm <= 0);
+
       switch (avoidState) {
         case AVOID_NONE: {
           if (usCm > 0 && usCm < LOCAL_CRITICAL_CM) {
@@ -908,6 +910,19 @@ void loop() {
             if (avoidTurnDir == 1) diffDrive(200, -200);
             else diffDrive(-200, 200);
             Serial.printf("[AVOID] CRUISE-TURN dir=%d target=%.1f\n", avoidTurnDir, turnTargetHeading);
+          }
+          else if (irTrigger) {
+            if (irL && !irR) avoidTurnDir = 1;
+            else if (irR && !irL) avoidTurnDir = -1;
+            else avoidTurnDir = 1;
+            turnTargetHeading = normalizeAngle(imuHeading + avoidTurnDir * TURN_ANGLE);
+            avoidState = AVOID_TURN;
+            avoidStateStart = now;
+            avoidTurnRetries = 0;
+            if (avoidTurnDir == 1) diffDrive(200, -200);
+            else diffDrive(-200, 200);
+            if (inCruiseMode) cruiseStateStr = "avoiding";
+            Serial.printf("[AVOID] IR-TRIGGER dir=%d irL=%d irR=%d us=%.1fcm\n", avoidTurnDir, irL, irR, usCm);
           }
           break;
         }
@@ -967,6 +982,14 @@ void loop() {
             Serial.printf("[AVOID] TURN→EMER us=%.1fcm\n", usCm);
             break;
           }
+          if ((irL && irR) && usCm > 0 && usCm < LOCAL_WARN_CM) {
+            stopMotorsSoft();
+            avoidState = AVOID_BACKWARD;
+            avoidStateStart = now;
+            diffDrive(-200, -200);
+            Serial.printf("[AVOID] TURN→BACK ir-both us=%.1fcm\n", usCm);
+            break;
+          }
           float error = normalizeAngle(turnTargetHeading - imuHeading);
           if (abs(error) < TURN_TOLERANCE) {
             stopMotorsSoft();
@@ -983,7 +1006,7 @@ void loop() {
         }
 
         case AVOID_PROBE:
-          if (usCm > LOCAL_SAFE_CM) {
+          if (usCm > LOCAL_SAFE_CM && !irL && !irR) {
             avoidTurnRetries = 0;
             avoidState = AVOID_NONE;
             if (inCruiseMode) {
@@ -993,6 +1016,17 @@ void loop() {
             } else {
               Serial.println("[AVOID] PROBE→CLEAR");
             }
+          } else if (usCm > LOCAL_SAFE_CM && (irL || irR)) {
+            if (irL && !irR) avoidTurnDir = 1;
+            else if (irR && !irL) avoidTurnDir = -1;
+            else avoidTurnDir = -avoidTurnDir;
+            turnTargetHeading = normalizeAngle(imuHeading + avoidTurnDir * TURN_ANGLE);
+            avoidState = AVOID_TURN;
+            avoidStateStart = now;
+            avoidTurnRetries++;
+            if (avoidTurnDir == 1) diffDrive(200, -200);
+            else diffDrive(-200, 200);
+            Serial.printf("[AVOID] PROBE→TURN ir-block dir=%d retry=%d\n", avoidTurnDir, avoidTurnRetries);
           } else if (avoidTurnRetries >= MAX_PROBE_RETRIES) {
             avoidTurnRetries = 0;
             avoidState = AVOID_NONE;
